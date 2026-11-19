@@ -38,6 +38,7 @@ pub async fn ticket(cfg: &Config) -> anyhow::Result<Ticket> {
         .post(format!("{}/device/ticket", ida.url))
         .header("x-device-name", &ida.device_name)
         .header("x-device-key", &ida.device_key)
+        .json(&serde_json::json!({ "prompt": cfg.assistant.prompt, "smart_home": cfg.assistant.smart_home }))
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("IDA nicht erreichbar: {e}"))?;

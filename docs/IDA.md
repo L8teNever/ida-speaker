@@ -34,9 +34,18 @@ Unter **IDA**:
 
 „Verbindung testen“ holt ein Ticket. Klappt das, ist alles bereit.
 
+## Eigene Anweisungen und Smart Home
+
+Unter **IDA → Anweisungen für diesen Lautsprecher**:
+
+- **Eigener Prompt:** Er kommt nur in Gespräche über diesen Lautsprecher, zusätzlich zu Stellas normalen Regeln. App und Telefon bleiben unverändert. Gut geeignet für Raum, Gerätenamen aus Home Assistant und Wünsche zum Stil, z. B. „Ich stehe im Wohnzimmer. Licht heißt `light.wohnzimmer`.“
+- **Smart Home direkt:** Stella hat die Home-Assistant-Tools direkt zur Hand und schaltet auf „Licht aus“ sofort, ohne nachzufragen (an, aus, umschalten). Alles andere, etwa Automationen ändern oder löschen, fragt weiter nach.
+
+Beides schickt der Lautsprecher bei jedem Ticket mit, IDA speichert es nicht.
+
 ## Was dabei passiert
 
-1. `POST <adresse>/device/ticket` mit den Headern `x-device-name` und `x-device-key` liefert ein Ticket, das eine Minute gilt.
+1. `POST <adresse>/device/ticket` mit den Headern `x-device-name` und `x-device-key` und optional dem Body `{"prompt": …, "smart_home": true}` liefert ein Ticket, das eine Minute gilt.
 2. `WebSocket <adresse>/live?ticket=…&mode=speaker` öffnet das Gespräch:
    - Pi → IDA: binär PCM 16 bit LE, 16 kHz mono; Text `{"type":"end"}` zum Auflegen
    - IDA → Pi: binär PCM 16 bit LE, 24 kHz mono; Text `ready`, `text`, `tool`, `interrupted`, `end`, `error`

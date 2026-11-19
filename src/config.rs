@@ -14,6 +14,7 @@ pub struct Config {
     pub call: Call,
     pub cloudflare: Cloudflare,
     pub wifi: Wifi,
+    pub assistant: Assistant,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -158,6 +159,17 @@ impl Default for Call {
     }
 }
 
+/// Nur für Gespräche über diesen Lautsprecher: eigene Anweisungen an Stella und Smart Home ohne Nachfrage.
+/// Die normalen Regeln von IDA gelten weiter, das hier kommt nur dazu.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Assistant {
+    /// z. B. „Ich stehe im Wohnzimmer. Licht heißt light.wohnzimmer.“ (höchstens 4000 Zeichen)
+    pub prompt: String,
+    /// Licht & Co. schaltet Stella sofort, ohne nachzufragen (Home Assistant).
+    pub smart_home: bool,
+}
+
 /// WLAN über NetworkManager des Pi. Ohne Netz macht der Lautsprecher ein eigenes Einrichtungs-WLAN auf.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -260,6 +272,7 @@ impl Config {
         if next.wifi.hotspot_ssid.is_empty() {
             next.wifi.hotspot_ssid = Wifi::default().hotspot_ssid;
         }
+        next.assistant.prompt = next.assistant.prompt.trim().chars().take(4000).collect();
         next.ida.url = next.ida.url.trim().trim_end_matches('/').to_string();
         next.ida.device_name = next.ida.device_name.trim().to_lowercase();
         next.ida.device_key = next.ida.device_key.trim().to_string();

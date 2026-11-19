@@ -34,10 +34,11 @@
   .card h2 { font-size: 16px; font-weight: 500; margin: 0 0 12px; }
   .card p.hint { color: var(--muted); font-size: 13px; margin: -6px 0 12px; }
   label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
-  input[type=text], input[type=password], input[type=url], input[type=number], select {
+  input[type=text], input[type=password], input[type=url], input[type=number], select, textarea {
     width: 100%; background: var(--surface-high); color: var(--on-surface); border: 1px solid var(--surface-highest);
     border-radius: 12px; padding: 10px 12px; font: inherit; }
-  input:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  textarea { resize: vertical; min-height: 110px; line-height: 1.4; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
   .btn { background: var(--surface-highest); color: var(--on-surface); border: 0; border-radius: 99px; padding: 10px 16px; font: inherit; cursor: pointer; }
@@ -206,7 +207,13 @@ function idaTab() {
     ${field("ida.url", "Adresse des Voice-Dienstes", "url", "Am besten die interne Adresse im Cloudflare-Netz, z. B. <code>http://10.x.x.x:8086</code>.")}
     ${field("ida.device_name", "Gerätename (wie in VOICE_DEVICES)")}
     ${field("ida.device_key", "Geräte-Schlüssel", "password")}
-    ${saveRow(`<button class="btn" data-act="/api/test/ida">Verbindung testen</button>`)}</div>`;
+    ${saveRow(`<button class="btn" data-act="/api/test/ida">Verbindung testen</button>`)}</div>
+  <div class="card"><h2>Anweisungen für diesen Lautsprecher</h2>
+    <p class="hint">Kommt nur in Gespräche über diesen Lautsprecher, zusätzlich zu den normalen Regeln von Stella. In der App und am Telefon bleibt alles wie immer.</p>
+    <label>Eigener Prompt</label>
+    <textarea data-k="assistant.prompt" rows="6" maxlength="4000" placeholder="z. B. Ich stehe im Wohnzimmer. „Licht“ heißt light.wohnzimmer, „Stehlampe“ heißt switch.stehlampe. Antworte besonders kurz.">${esc(cfgVal("assistant.prompt"))}</textarea>
+    ${toggle("assistant.smart_home", "Smart Home direkt", "„Licht aus“ schaltet sofort, ohne Nachfrage (Home Assistant: an, aus, umschalten)")}
+    ${saveRow()}</div>`;
 }
 function cloudTab() {
   return `<div class="card"><h2>Mit einem Klick einrichten</h2>
