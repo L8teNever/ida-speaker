@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>IDA Speaker</title>
+<style>
+  :root {
+    --accent: #7fd3ff; --accent-rgb: 127,211,255; --on-accent: #00344a;
+    --container: #0e2a38; --on-container: #c4ecff;
+    --surface: #121316; --surface-high: #1d1f23; --surface-highest: #282a2f;
+    --on-surface: #e3e2e6; --muted: #9a9ca3; --bad: #f28b82; --good: #81c995; --warn: #fde293;
+    --emph: cubic-bezier(.2,0,0,1);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #000; color: var(--on-surface);
+    font: 15px/1.45 "Google Sans Flex","Google Sans",Roboto,system-ui,sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
+  header { display: flex; align-items: center; gap: 14px; margin: 8px 0 18px; }
+  .orb { width: 46px; height: 46px; border-radius: 50%; flex: none; background: radial-gradient(circle at 35% 30%, #fff, #dfe7f1 60%, #9fb4c8);
+    box-shadow: 0 0 0 0 rgba(var(--accent-rgb), .0); transition: box-shadow .4s var(--emph); }
+  .orb.listening { box-shadow: 0 0 14px 2px rgba(var(--accent-rgb), .35); }
+  .orb.talking { box-shadow: 0 0 26px 8px rgba(var(--accent-rgb), .7); animation: pulse 1.4s infinite; }
+  .orb.error { box-shadow: 0 0 18px 4px rgba(242,139,130,.6); }
+  @keyframes pulse { 50% { box-shadow: 0 0 34px 12px rgba(var(--accent-rgb), .45); } }
+  h1 { font-size: 24px; font-weight: 500; margin: 0; color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  nav button { background: var(--surface-high); color: var(--on-surface); border: 0; padding: 8px 14px; border-radius: 99px; cursor: pointer; font-size: 14px; }
+  nav button.on { background: var(--accent); color: var(--on-accent); }
+  section { display: none; } section.on { display: block; }
+  .card { background: var(--surface); border-radius: 22px; padding: 18px; margin-bottom: 14px; }
+  .card h2 { font-size: 16px; font-weight: 500; margin: 0 0 12px; }
+  .card p.hint { color: var(--muted); font-size: 13px; margin: -6px 0 12px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  input[type=text], input[type=password], input[type=url], input[type=number], select {
+    width: 100%; background: var(--surface-high); color: var(--on-surface); border: 1px solid var(--surface-highest);
+    border-radius: 12px; padding: 10px 12px; font: inherit; }
+  input:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+  .btn { background: var(--surface-highest); color: var(--on-surface); border: 0; border-radius: 99px; padding: 10px 16px; font: inherit; cursor: pointer; }
+  .btn.primary { background: var(--accent); color: var(--on-accent); font-weight: 500; }
+  .btn.danger { background: #513534; color: #ffdad6; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .sw { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; cursor: pointer; }
+  .sw input { width: 44px; height: 26px; appearance: none; background: var(--surface-highest); border-radius: 99px; position: relative; cursor: pointer; flex: none; transition: background .2s; }
+  .sw input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--muted); transition: transform .2s var(--emph), background .2s; }
+  .sw input:checked { background: var(--accent); } .sw input:checked::after { transform: translateX(18px); background: var(--on-accent); }
+  .sw span small { display: block; color: var(--muted); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+  .stat { background: var(--surface-high); border-radius: 16px; padding: 12px; }
+  .stat b { display: block; font-weight: 500; } .stat span { color: var(--muted); font-size: 12px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--muted); vertical-align: 1px; }
+  .dot.good { background: var(--good); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+  .meter { height: 10px; background: var(--surface-high); border-radius: 99px; overflow: hidden; position: relative; }
+  .meter i { position: absolute; inset: 0 auto 0 0; background: var(--accent); width: 0; transition: width .12s linear; }
+  .meter u { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--warn); }
+  .logs { font: 12px/1.5 ui-monospace, monospace; color: var(--muted); max-height: 320px; overflow: auto; white-space: pre-wrap; }
+  .msg { padding: 8px 12px; border-radius: 14px; margin-top: 10px; font-size: 14px; }
+  .msg.ok { background: #31463a; color: #d6f5dd; } .msg.bad { background: #513534; color: #ffdad6; }
+  .talk p { margin: 6px 0; } .talk .user { color: var(--muted); }
+  .center { min-height: 70vh; display: grid; place-items: center; }
+  .narrow { width: 100%; max-width: 380px; }
+  ul.trig { list-style: none; margin: 0; padding: 0; } ul.trig li { padding: 6px 0; border-bottom: 1px solid var(--surface-high); font-size: 14px; }
+  ul.trig li span { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  code { background: var(--surface-high); padding: 1px 6px; border-radius: 6px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { boot(); throw new Error("Bitte anmelden"); }
+  if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+  return j;
+}
+const PHASE = { starting: "startet", listening: "hört zu", connecting: "verbindet", talking: "im Gespräch", muted: "stumm", error: "Fehler" };
+let S = null, tab = "status", levelTimer = null, stateTimer = null, devices = null;
+
+function authScreen(setup, error = "") {
+  $("#app").innerHTML = `<div class="center"><div class="narrow card">
+    <header style="margin-top:0"><div class="orb listening"></div><div><h1>IDA Speaker</h1><div class="sub">${setup ? "Erste Einrichtung" : "Anmelden"}</div></div></header>
+    ${setup ? `<p class="hint" style="margin:0">Leg ein Passwort für diese Seite fest (mindestens 8 Zeichen). Ohne Passwort kommt niemand an die Einstellungen.</p>` : ""}
+    <label>Passwort</label><input id="pw" type="password" autocomplete="${setup ? "new-password" : "current-password"}" autofocus>
+    ${setup ? `<label>Noch einmal</label><input id="pw2" type="password" autocomplete="new-password">` : ""}
+    <div class="row"><button class="btn primary" id="go">${setup ? "Festlegen" : "Anmelden"}</button></div>
+    <div id="err">${error ? `<div class="msg bad">${esc(error)}</div>` : ""}</div></div></div>`;
+  const go = async () => {
+    const pw = $("#pw").value;
+    if (setup && pw !== $("#pw2").value) { $("#err").innerHTML = `<div class="msg bad">Die Passwörter sind nicht gleich.</div>`; return; }
+    try { await api(setup ? "/api/setup" : "/api/login", { password: pw }); boot(); }
+    catch (e) { $("#err").innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+  };
+  $("#go").onclick = go;
+  document.querySelectorAll("input").forEach(i => i.onkeydown = e => e.key === "Enter" && go());
+}
+
+async function boot() {
+  clearInterval(levelTimer); clearInterval(stateTimer);
+  const st = await fetch("/api/status").then(r => r.json());
+  if (st.setup_needed) return authScreen(true);
+  if (!st.logged_in) return authScreen(false);
+  await refresh();
+  render();
+  stateTimer = setInterval(async () => { await refresh(); renderLive(); }, 2500);
+  levelTimer = setInterval(pollLevel, 200);
+}
+async function refresh() { try { S = await api("/api/state"); } catch {} }
+async function pollLevel() {
+  if (tab !== "status" && tab !== "audio" && tab !== "wake") return;
+  try {
+    const l = await api("/api/level");
+    const pct = Math.min(100, Math.sqrt(l.level / 32767) * 100);
+    document.querySelectorAll(".meter i").forEach(i => i.style.width = pct + "%");
+    const h = $("#heard"); if (h) h.textContent = l.heard || "–";
+    const o = $(".orb"); if (o) o.className = "orb " + l.phase;
+  } catch {}
+}
+
+function cfgVal(path) { return path.split(".").reduce((o, k) => o?.[k], S.config); }
+const field = (path, label, type = "text", hint = "") =>
+  `<label>${label}</label><input type="${type}" data-k="${path}" value="${esc(cfgVal(path))}" ${type === "password" ? 'autocomplete="new-password" placeholder="unverändert lassen"' : ""}>${hint ? `<p class="hint" style="margin:4px 0 0">${hint}</p>` : ""}`;
+const toggle = (path, label, small = "") =>
+  `<label class="sw"><span>${label}${small ? `<small>${small}</small>` : ""}</span><input type="checkbox" data-k="${path}" ${cfgVal(path) ? "checked" : ""}></label>`;
+const range = (path, label, min, max, step, fmt) =>
+  `<label>${label}: <b data-show="${path}">${fmt(cfgVal(path))}</b></label><input type="range" data-k="${path}" min="${min}" max="${max}" step="${step}" value="${cfgVal(path)}" data-fmt="${fmt.name}">`;
+const fmts = { pct: v => Math.round(v) + " %", sens: v => Math.round(v * 100) + " %", sec: v => v + " s", min: v => v + " min", raw: v => v };
+
+function collect(root) {
+  const patch = {};
+  root.querySelectorAll("[data-k]").forEach(el => {
+    const keys = el.dataset.k.split("."); let o = patch;
+    keys.slice(0, -1).forEach(k => o = o[k] ??= {});
+    let v = el.type === "checkbox" ? el.checked : el.value;
+    if (el.type === "range" || el.type === "number") v = Number(v);
+    if (el.type === "password" && !v) return;
+    o[keys.at(-1)] = v;
+  });
+  return patch;
+}
+async function save(btn) {
+  const card = btn.closest(".card"), out = $(".out", card);
+  btn.disabled = true;
+  try { const r = await api("/api/config", collect(card)); S.config = r.config; out.innerHTML = `<div class="msg ok">Gespeichert – gilt sofort.</div>`; }
+  catch (e) { out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+  btn.disabled = false; setTimeout(() => out.innerHTML = "", 4000);
+}
+async function action(btn, path, body = {}) {
+  const card = btn.closest(".card"), out = $(".out", card);
+  btn.disabled = true;
+  try { const r = await api(path, body); if (out && r.message) out.innerHTML = `<div class="msg ${r.ok === false ? "bad" : "ok"}">${esc(r.message)}</div>`; }
+  catch (e) { if (out) out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+  btn.disabled = false; await refresh(); renderLive();
+}
+const saveRow = (extra = "") => `<div class="row"><button class="btn primary" data-save>Speichern</button>${extra}</div><div class="out"></div>`;
+
+function statusTab() {
+  const w = S.warp, a = S.audio, c = S.config;
+  const ida = c.ida.url && c.ida.device_name && c.ida.device_key;
+  return `<div class="card"><h2>Zustand</h2><div class="grid" id="stats"></div>
+    <label>Mikrofon</label><div class="meter"><i></i></div>
+    <div class="row">
+      <button class="btn primary" data-act="/api/talk" ${ida ? "" : "disabled"}>Gespräch starten</button>
+      <button class="btn" data-act="/api/stop">Auflegen</button>
+      <button class="btn" id="mute">${S.muted ? "Wieder zuhören" : "Stumm"}</button>
+    </div><div class="out"></div></div>
+    ${!ida || (c.cloudflare.enabled && !w.connected) ? `<div class="card"><h2>Noch einzurichten</h2><ul>
+      ${!ida ? `<li>Unter <b>IDA</b> Adresse, Gerätename und Schlüssel eintragen.</li>` : ""}
+      ${c.cloudflare.enabled && !w.connected ? `<li>Cloudflare ist an, aber noch nicht verbunden.</li>` : ""}</ul></div>` : ""}
+    <div class="card"><h2>Gespräch</h2><div class="talk" id="talk"></div></div>
+    <div class="card"><h2>Letzte Auslöser</h2><ul class="trig" id="trig"></ul></div>`;
+}
+function renderLive() {
+  if (!S) return;
+  const o = $(".orb"); if (o) o.className = "orb " + S.phase;
+  const sub = $("#phase"); if (sub) sub.textContent = PHASE[S.phase] || S.phase;
+  const w = S.warp, a = S.audio, c = S.config;
+  const st = $("#stats");
+  if (st) st.innerHTML = [
+    ["Status", PHASE[S.phase], S.phase === "error" ? "bad" : S.phase === "muted" ? "warn" : "good"],
+    ["Wake-Word", a.model ? `„${c.wake.word}“` : "kein Modell", a.model && !a.unknown_words.length ? "good" : "warn"],
+    ["Echo-Filter", a.echo_filter ? "an" : "aus", a.echo_filter ? "good" : "warn"],
+    ["Cloudflare", !c.cloudflare.enabled ? "aus" : w.connected ? "verbunden" : "nicht verbunden", !c.cloudflare.enabled ? "" : w.connected ? "good" : "bad"],
+    ["Mikrofon", a.input || "–", a.error ? "bad" : "good"],
+    ["Lautsprecher", a.output || "–", a.error ? "bad" : "good"],
+  ].map(([k, v, d]) => `<div class="stat"><span><i class="dot ${d}"></i>${k}</span><b>${esc(v)}</b></div>`).join("") +
+    (a.error ? `<div class="stat" style="grid-column:1/-1"><span>Audio-Fehler</span><b>${esc(a.error)}</b></div>` : "");
+  const t = $("#talk");
+  if (t) t.innerHTML = S.conversation.length ? S.conversation.map(m => `<p class="${m.who === "user" ? "user" : ""}"><b>${m.who === "user" ? "Du" : "Stella"}:</b> ${esc(m.text)}</p>`).join("") : `<p class="sub">Noch nichts gesagt.</p>`;
+  const tr = $("#trig");
+  if (tr) tr.innerHTML = S.triggers.length ? S.triggers.map(x => `<li><span>${new Date(x.at * 1000).toLocaleString("de-DE")}</span>${esc(x.source)} – ${esc(x.result)}</li>`).join("") : `<li class="sub">Noch keine.</li>`;
+  const lg = $("#logs"); if (lg) lg.textContent = S.logs.join("\n");
+  const ws = $("#warpstate"); if (ws) ws.innerHTML = `<i class="dot ${w.connected ? "good" : c.cloudflare.enabled ? "bad" : ""}"></i>${esc(w.detail || "–")}`;
+  const m = $("#mute"); if (m) m.textContent = S.muted ? "Wieder zuhören" : "Stumm";
+}
+
+function idaTab() {
+  return `<div class="card"><h2>Verbindung zu IDA</h2>
+    <p class="hint">In IDA den Lautsprecher in <code>VOICE_DEVICES</code> eintragen. Den Schlüssel zeigt IDA unter <code>/api/v1/voice/devices</code>.</p>
+    ${field("ida.url", "Adresse des Voice-Dienstes", "url", "Am besten die interne Adresse im Cloudflare-Netz, z. B. <code>http://10.x.x.x:8086</code>.")}
+    ${field("ida.device_name", "Gerätename (wie in VOICE_DEVICES)")}
+    ${field("ida.device_key", "Geräte-Schlüssel", "password")}
+    ${saveRow(`<button class="btn" data-act="/api/test/ida">Verbindung testen</button>`)}</div>`;
+}
+function cloudTab() {
+  return `<div class="card"><h2>Cloudflare Zero Trust</h2>
+    <p class="hint">WARP läuft hier im Container. Mit einem Service-Token meldet sich der Lautsprecher ohne Browser an und erreicht IDA im privaten Netz.</p>
+    ${toggle("cloudflare.enabled", "WARP verwenden")}
+    ${field("cloudflare.team", "Team-Name", "text", "Der Teil vor <code>.cloudflareaccess.com</code>.")}
+    ${field("cloudflare.client_id", "Service-Token: Client-ID")}
+    ${field("cloudflare.client_secret", "Service-Token: Client-Secret", "password")}
+    <label>Status</label><div id="warpstate"></div>
+    ${saveRow(`<button class="btn" data-act="/api/warp/reconnect">Neu verbinden</button>`)}</div>`;
+}
+function audioTab() {
+  const opt = (list, cur) => `<option value="">Standardgerät</option>` + (list || []).map(d => `<option value="${esc(d.id)}" ${d.id === cur ? "selected" : ""}>${esc(d.name)}${d.name !== d.id ? " (" + esc(d.id) + ")" : ""}</option>`).join("");
+  const c = S.config;
+  return `<div class="card"><h2>Geräte</h2>
+    <label>Mikrofon</label><select data-k="audio.input">${opt(devices?.inputs, c.audio.input)}</select>
+    <label>Lautsprecher</label><select data-k="audio.output">${opt(devices?.outputs, c.audio.output)}</select>
+    ${range("audio.volume", "Lautstärke", 0, 200, 5, fmts.pct)}
+    ${range("audio.mic_gain", "Mikrofon-Verstärkung", 0, 400, 10, fmts.pct)}
+    <label>Mikrofon-Pegel</label><div class="meter"><i></i></div>
+    ${toggle("audio.tones", "Signaltöne", "Ton beim Zuhören und am Ende des Gesprächs")}
+    ${saveRow(`<button class="btn" data-act="/api/test/tone">Testton</button>`)}</div>
+  <div class="card"><h2>Echo-Filter</h2>
+    <p class="hint">Rechnet Stellas Stimme aus dem Mikrofon heraus, damit sie sich nicht selbst hört und du sie unterbrechen kannst.</p>
+    ${toggle("echo.enabled", "Echo-Unterdrückung (WebRTC AEC3)")}
+    <label>Rauschunterdrückung</label><select data-k="echo.noise">${["off", "low", "moderate", "high"].map(v => `<option value="${v}" ${c.echo.noise === v ? "selected" : ""}>${{ off: "aus", low: "leicht", moderate: "mittel", high: "stark" }[v]}</option>`).join("")}</select>
+    ${toggle("echo.agc", "Automatische Mikrofon-Lautstärke")}
+    ${toggle("echo.mute_while_speaking", "Notfall-Modus", "Mikrofon stumm, solange Stella spricht – dann kein Unterbrechen")}
+    ${saveRow()}</div>
+  <div class="card"><h2>Gespräch</h2>
+    ${range("call.silence_end_s", "Auflegen nach Stille", 3, 60, 1, fmts.sec)}
+    ${range("call.max_minutes", "Höchstens", 1, 60, 1, fmts.min)}
+    ${range("call.speech_rms", "Ab diesem Pegel gilt es als Sprache", 100, 4000, 50, fmts.raw)}
+    ${saveRow()}</div>`;
+}
+function wakeTab() {
+  const a = S.audio;
+  return `<div class="card"><h2>Wake-Word</h2>
+    <p class="hint">Läuft komplett offline auf dem Gerät. Ein Wort oder eine kurze Phrase, z. B. „Stella“ oder „Hey Stella“.</p>
+    ${toggle("wake.enabled", "Auf das Wake-Word hören")}
+    ${field("wake.word", "Wort")}
+    ${a.unknown_words?.length ? `<div class="msg bad">Das Sprachmodell kennt ${a.unknown_words.map(w => `„${esc(w)}“`).join(", ")} nicht. Nimm ein anderes Wort oder lege ein größeres Modell nach <code>/data/model</code>.</div>` : ""}
+    ${!a.model ? `<div class="msg bad">Kein Sprachmodell geladen.</div>` : ""}
+    ${range("wake.sensitivity", "Empfindlichkeit", 0, 1, 0.05, fmts.sens)}
+    <p class="hint" style="margin:4px 0 0">Höher = reagiert leichter, aber öfter aus Versehen.</p>
+    <label>Mikrofon-Pegel</label><div class="meter"><i></i></div>
+    <label>Zuletzt gehört</label><div id="heard" class="sub">–</div>
+    ${saveRow()}</div>`;
+}
+function systemTab() {
+  return `<div class="card"><h2>Passwort ändern</h2>
+    <label>Altes Passwort</label><input type="password" id="old" autocomplete="current-password">
+    <label>Neues Passwort</label><input type="password" id="new" autocomplete="new-password">
+    <div class="row"><button class="btn primary" id="chpw">Ändern</button><button class="btn" id="logout">Abmelden</button></div><div class="out"></div></div>
+  <div class="card"><h2>System</h2><div class="row" style="margin-top:0"><button class="btn danger" data-act="/api/restart">Neu starten</button></div><div class="out"></div></div>
+  <div class="card"><h2>Protokoll</h2><div class="logs" id="logs"></div></div>`;
+}
+
+const TABS = { status: ["Status", statusTab], wake: ["Wake-Word", wakeTab], audio: ["Audio", audioTab], ida: ["IDA", idaTab], cloud: ["Cloudflare", cloudTab], system: ["System", systemTab] };
+async function render() {
+  if (tab === "audio" && !devices) { try { devices = await api("/api/devices"); } catch { devices = { inputs: [], outputs: [] }; } }
+  $("#app").innerHTML = `<header><div class="orb ${S.phase}"></div><div><h1>IDA Speaker</h1><div class="sub" id="phase">${PHASE[S.phase] || ""}</div></div></header>
+    <nav>${Object.entries(TABS).map(([k, [n]]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${n}</button>`).join("")}</nav>
+    <section class="on">${TABS[tab][1]()}</section>`;
+  document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+  document.querySelectorAll("[data-save]").forEach(b => b.onclick = () => save(b));
+  document.querySelectorAll("[data-act]").forEach(b => b.onclick = () => action(b, b.dataset.act));
+  document.querySelectorAll("input[type=range]").forEach(r => r.oninput = () => { const s = $(`[data-show="${r.dataset.k}"]`); if (s) s.textContent = fmts[r.dataset.fmt](Number(r.value)); });
+  const m = $("#mute"); if (m) m.onclick = () => action(m, "/api/mute", { on: !S.muted });
+  const lo = $("#logout"); if (lo) lo.onclick = async () => { await api("/api/logout", {}); boot(); };
+  const cp = $("#chpw"); if (cp) cp.onclick = async () => {
+    const out = $(".out", cp.closest(".card"));
+    try { await api("/api/password", { password: $("#old").value, new_password: $("#new").value }); out.innerHTML = `<div class="msg ok">Passwort geändert.</div>`; }
+    catch (e) { out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+  };
+  renderLive();
+}
+boot();
+</script>
+</body>
+</html>

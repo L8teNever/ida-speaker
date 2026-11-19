@@ -1,0 +1,28 @@
+# Auf dem Raspberry Pi: `docker compose up -d`, dann http://<pi>:8080 öffnen.
+# Alle Einstellungen (IDA, Cloudflare, Audio, Wake-Word) macht man auf der Website; sie liegen im Volume /data.
+services:
+  ida-speaker:
+    image: ghcr.io/l8tenever/ida-speaker:latest
+    container_name: ida-speaker
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    devices:
+      - /dev/snd:/dev/snd          # Mikrofon und Lautsprecher
+      - /dev/net/tun:/dev/net/tun  # Cloudflare WARP
+    group_add:
+      - audio
+    cap_add:
+      - NET_ADMIN                  # WARP richtet im Container eine Netzwerkschnittstelle ein
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - ida-speaker:/data
+      - warp:/var/lib/cloudflare-warp
+    environment:
+      - TZ=${TZ:-Europe/Berlin}
+      - RUST_LOG=${RUST_LOG:-info}
+
+volumes:
+  ida-speaker:
+  warp:

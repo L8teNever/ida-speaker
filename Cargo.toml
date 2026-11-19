@@ -1,0 +1,31 @@
+[package]
+name = "ida-speaker"
+version = "0.1.0"
+edition = "2024"
+description = "Sprach-Lautsprecher für IDA: Wake-Word, Echo-Filter und Live-Gespräch auf dem Raspberry Pi"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+axum = "0.8"
+cpal = "0.18"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vosk = "0.3.1"
+webrtc-audio-processing = { version = "~2.1", features = ["bundled"] }
+webrtc-audio-processing-config = "~2.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

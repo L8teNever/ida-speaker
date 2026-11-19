@@ -1,0 +1,7 @@
+/target
+/data
+.env
+*.local.toml
+config.toml
+mdm.xml
+/model
