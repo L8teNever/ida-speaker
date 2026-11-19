@@ -19,6 +19,9 @@ services:
     volumes:
       - ida-speaker:/data
       - warp:/var/lib/cloudflare-warp
+      # WLAN, Einrichtungs-WLAN, Neustart/Ausschalten: NetworkManager und systemd des Pi über dessen D-Bus
+      - /run/dbus/system_bus_socket:/run/host-dbus/system_bus_socket
+      - /etc/hostname:/etc/host-hostname:ro
     environment:
       - TZ=${TZ:-Europe/Berlin}
       - RUST_LOG=${RUST_LOG:-info}

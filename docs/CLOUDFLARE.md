@@ -4,7 +4,35 @@ Damit der Lautsprecher IDA über die **interne** Adresse erreicht, ohne öffentl
 
 Auf dem Pi selbst richtest du nichts ein. WARP leitet nur den Verkehr des Containers um, nicht den des ganzen Pi.
 
-## Voraussetzungen in Cloudflare
+## Mit einem Klick
+
+Unter **Cloudflare → Mit einem Klick einrichten** einen API-Token eintragen und auf „Automatisch einrichten“ drücken. Trag vorher unter **IDA** die interne Adresse ein, damit der Lautsprecher weiß, wohin der Tunnel führen muss.
+
+Dabei passiert Folgendes:
+
+1. Konto und Team-Name werden gesucht. Bei mehreren Konten fragt die Seite nach.
+2. Der Service-Token `ida-speaker-<gerätename>` wird angelegt und läuft nicht ab. Gibt es ihn schon, bekommt er ein neues Secret.
+3. An der WARP-Anmeldung (Geräteregistrierung) kommt eine Policy *Service Auth* für genau diesen Token dazu.
+4. Client-ID, Secret und Team werden auf dem Lautsprecher eingetragen, und WARP verbindet sich.
+5. Steht unter IDA eine IP:
+   - **Split Tunnel:** Im Include-Modus kommt die IP zur Liste dazu. Im Exclude-Modus wird sie aus dem Bereich genommen, der sie ausschließt. Der Rest des Bereichs bleibt ausgeschlossen.
+   - **Route:** Deckt keine Route die IP ab, fragt die Seite, welcher Tunnel zum IDA-Server führt, und legt `<ip>/32` an.
+
+Der API-Token wird nicht gespeichert. Diese Rechte braucht er auf Kontoebene:
+
+| Recht | Stufe |
+|---|---|
+| Access: Service Tokens | Bearbeiten |
+| Access: Apps and Policies | Bearbeiten |
+| Access: Organizations, Identity Providers, and Groups | Lesen |
+| Zero Trust | Bearbeiten |
+| Cloudflare Tunnel | Bearbeiten |
+
+Split Tunnel und WARP-Anmeldung gelten für das Standard-Geräteprofil, also für alle WARP-Geräte des Kontos.
+
+## Von Hand
+
+### Voraussetzungen in Cloudflare
 
 1. **Tunnel zum IDA-Server** mit einer privaten Netz-Route, z. B. `10.0.0.0/24` oder die Docker-Netze des Servers (*Networks → Tunnels → Private networks*).
 2. **Service-Token** anlegen: *Access → Service auth → Service tokens → Create*. Client-ID und Client-Secret notieren, das Secret wird nur einmal angezeigt.

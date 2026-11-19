@@ -28,7 +28,7 @@ Die Antwort sieht so aus: `{"devices": [{"name": "wohnzimmer", "key": "…"}]}`.
 
 Unter **IDA**:
 
-- **Adresse:** die Adresse des `voice`-Containers. Am besten ist die interne Adresse im Cloudflare-Netz, z. B. `http://10.x.x.x:8086` (siehe [CLOUDFLARE.md](CLOUDFLARE.md)). Die öffentliche HTTPS-Adresse des Voice-Dienstes geht auch.
+- **Adresse:** die Adresse des `voice`-Containers im Cloudflare-Netz. Das ist entweder die Server-IP mit dem veröffentlichten Port (z. B. `http://10.x.x.x:8086`) oder die Docker-IP des Containers mit Port 8000 (z. B. `http://172.x.x.x:8000`, zu finden mit `docker inspect`). Siehe [CLOUDFLARE.md](CLOUDFLARE.md). Die öffentliche HTTPS-Adresse des Voice-Dienstes geht auch.
 - **Gerätename:** wie in `VOICE_DEVICES`
 - **Schlüssel:** aus Schritt 2
 

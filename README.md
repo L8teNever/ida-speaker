@@ -24,24 +24,26 @@ Pi (ein Container)
 
 ## Installieren
 
+Auf dem Pi ein einziger Befehl:
+
 ```sh
-curl -fsSL https://get.docker.com | sh       # falls Docker noch fehlt
-docker run -d --name ida-speaker --restart unless-stopped \
-  --device /dev/snd --device /dev/net/tun --cap-add NET_ADMIN \
-  --sysctl net.ipv4.conf.all.src_valid_mark=1 \
-  -p 8080:8080 -v ida-speaker:/data -v ida-speaker-warp:/var/lib/cloudflare-warp \
-  ghcr.io/l8tenever/ida-speaker:latest
+curl -fsSL https://raw.githubusercontent.com/L8teNever/ida-speaker/main/install.sh | sh
 ```
 
-Statt `docker run` geht auch die [`docker-compose.yml`](docker-compose.yml) aus diesem Repo (`docker compose up -d`) oder [`install.sh`](install.sh), das beides erledigt.
+Er installiert Docker, falls es fehlt, und richtet den Autostart ein: Nach jedem Neustart des Pi läuft ida-speaker von selbst. Außerdem schaltet er das WLAN frei und startet den Container. Alles Weitere geht über die Website.
 
-Dann `http://<pi>:8080` öffnen. Ein Assistent führt durch die Einrichtung:
+Statt des Skripts geht auch die [`docker-compose.yml`](docker-compose.yml) aus diesem Repo (`docker compose up -d`).
+
+Dann `http://<pi>:8080` oder `http://<hostname>.local:8080` öffnen:
 
 1. **Passwort** für die Seite festlegen.
-2. **IDA:** Adresse des Voice-Dienstes, Gerätename und Schlüssel eintragen, dann „Verbindung testen“ ([so geht's](docs/IDA.md)).
-3. **Cloudflare** (optional): Team-Name und Service-Token eintragen. Der Pi kommt dann ins Zero-Trust-Netz ([so geht's](docs/CLOUDFLARE.md)).
-4. **Audio:** Mikrofon und Lautsprecher wählen, Testton abspielen, Pegel prüfen.
-5. **Wake-Word:** Wort eintragen und Empfindlichkeit einstellen.
+2. **WLAN** (falls der Pi noch am Kabel hängt oder im Einrichtungs-WLAN ist): Netz wählen, Passwort eingeben.
+3. **IDA:** Adresse des Voice-Dienstes, Gerätename und Schlüssel eintragen, dann „Verbindung testen“ ([so geht's](docs/IDA.md)).
+4. **Cloudflare:** API-Token eintragen und „Automatisch einrichten“ drücken ([was dabei passiert](docs/CLOUDFLARE.md)).
+5. **Audio:** Mikrofon und Lautsprecher wählen, Testton abspielen, Pegel prüfen.
+6. **Wake-Word:** Wort eintragen und Empfindlichkeit einstellen.
+
+**Kein Netz?** Findet der Pi weder Kabel noch ein bekanntes WLAN, öffnet er nach etwa 90 Sekunden das WLAN **„IDA-Speaker-Setup“** (Passwort `idaspeaker`, beides änderbar). Mit dem Handy verbinden, `http://10.42.0.1:8080` öffnen und dort das richtige WLAN wählen.
 
 Alle Änderungen gelten sofort, ein Neustart ist nicht nötig. Die Einstellungen liegen nur auf dem Pi (`/data/config.toml` im Volume), nie im Repo.
 
@@ -63,8 +65,9 @@ Alle Änderungen gelten sofort, ein Neustart ist nicht nötig. Die Einstellungen
 | Echo-Filter | Echo-Unterdrückung, Rauschunterdrückung, automatische Lautstärke, Notfall-Modus (Mikrofon stumm, solange Stella spricht) |
 | Gespräch | Auflegen nach Stille, Höchstdauer, Sprach-Schwelle |
 | IDA | Adresse, Gerätename, Schlüssel, Verbindungstest |
-| Cloudflare | WARP an/aus, Team-Name, Service-Token, Status, Neu verbinden |
-| System | Passwort ändern, Neustart, Protokoll |
+| Cloudflare | Einrichtung mit einem Klick per API-Token, oder von Hand: WARP an/aus, Team-Name, Service-Token, Status, Neu verbinden |
+| WLAN | Netze suchen, verbinden, vergessen; Einrichtungs-WLAN ohne Netz |
+| System | Passwort ändern, Programm neu starten, Pi neu starten oder ausschalten, Protokoll |
 
 Kennt das kleine Sprachmodell dein Wort nicht, zeigt die Website das an. Dann hilft ein anderes Wort oder ein größeres Vosk-Modell, das du nach `/data/model` legst ([Liste der Modelle](https://alphacephei.com/vosk/models)).
 

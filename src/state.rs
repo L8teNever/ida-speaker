@@ -4,7 +4,7 @@ use crate::config::Config;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
@@ -68,6 +68,7 @@ pub struct Status {
     pub warp: WarpStatus,
     pub audio: AudioInfo,
     pub last_text: VecDeque<(String, String)>,
+    pub wifi: crate::wifi::Status,
 }
 
 pub struct App {
@@ -79,6 +80,8 @@ pub struct App {
     /// Mikrofon-Pegel (RMS nach dem Filter) für die Website.
     pub level: AtomicU32,
     pub muted: AtomicBool,
+    /// Letzter angemeldeter Seitenaufruf (Sekunden), damit der WLAN-Wächter den Hotspot nicht unter dir wegzieht.
+    pub last_web: AtomicU64,
     /// Gespräch läuft: Mikrofon geht an IDA statt ans Wake-Word.
     pub talking: AtomicBool,
     /// Mikrofon-Audio für das laufende Gespräch (16 kHz, i16).
@@ -125,11 +128,13 @@ impl App {
                 warp: WarpStatus::default(),
                 audio: AudioInfo::default(),
                 last_text: VecDeque::new(),
+                wifi: Default::default(),
             }),
             sessions: Mutex::new(Default::default()),
             commands,
             level: AtomicU32::new(0),
             muted: AtomicBool::new(false),
+            last_web: AtomicU64::new(0),
             talking: AtomicBool::new(false),
             mic: Mutex::new(None),
             playback: Mutex::new(Playback::default()),
@@ -207,6 +212,10 @@ impl App {
 
     pub fn output_rate(&self) -> u32 {
         self.playback.lock().unwrap().rate
+    }
+
+    pub fn web_active(&self) -> bool {
+        now_s().saturating_sub(self.last_web.load(Ordering::Relaxed)) < 120
     }
 
     pub fn muted(&self) -> bool {

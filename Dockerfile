@@ -31,7 +31,7 @@ RUN curl -fsSL -o /tmp/m.zip "https://alphacephei.com/vosk/models/${VOSK_MODEL}.
 
 FROM debian:trixie-slim
 RUN set -eux; apt-get update; apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg alsa-utils libstdc++6 tini dbus iproute2; \
+      ca-certificates curl gnupg alsa-utils libstdc++6 tini dbus iproute2 network-manager; \
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg; \
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ trixie main" \
       > /etc/apt/sources.list.d/cloudflare-client.list; \
@@ -43,7 +43,7 @@ COPY --from=model /opt/vosk-model /opt/vosk-model
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 # Selbsttest: alles da, keine fehlenden Bibliotheken
 RUN ldconfig && chmod +x /usr/local/bin/entrypoint.sh \
-    && command -v warp-svc && command -v warp-cli && command -v tini && test -d /opt/vosk-model/am \
+    && command -v warp-svc && command -v warp-cli && command -v tini && command -v nmcli && command -v dbus-send && test -d /opt/vosk-model/am \
     && ! ldd /usr/local/bin/ida-speaker /usr/local/lib/libvosk.so | grep "not found"
 ENV IDA_SPEAKER_DATA=/data VOSK_MODEL=/opt/vosk-model PORT=8080 RUST_LOG=info
 VOLUME /data

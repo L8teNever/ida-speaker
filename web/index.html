@@ -209,7 +209,14 @@ function idaTab() {
     ${saveRow(`<button class="btn" data-act="/api/test/ida">Verbindung testen</button>`)}</div>`;
 }
 function cloudTab() {
-  return `<div class="card"><h2>Cloudflare Zero Trust</h2>
+  return `<div class="card"><h2>Mit einem Klick einrichten</h2>
+    <p class="hint">Trag einen Cloudflare-API-Token ein. Der Lautsprecher legt dann seinen Service-Token an, erlaubt ihm die WARP-Anmeldung, sorgt dafür, dass die IDA-Adresse durch den Tunnel geht (Split Tunnel und Route), und trägt alles selbst ein. Der API-Token wird nicht gespeichert.</p>
+    <p class="hint">Rechte für den Token (Konto): <b>Access: Service Tokens</b>, <b>Access: Apps and Policies</b>, <b>Zero Trust</b>, <b>Cloudflare Tunnel</b> – jeweils Bearbeiten; <b>Access: Organizations</b> Lesen. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener" style="color:var(--accent)">Token anlegen</a></p>
+    ${S.config.ida.url ? "" : `<div class="msg bad">Trag zuerst unter <b>IDA</b> die Adresse ein, sonst kann die Route nicht eingerichtet werden.</div>`}
+    <label>API-Token</label><input type="password" id="cftoken" autocomplete="off">
+    <div id="cfchoice"></div>
+    <div class="row"><button class="btn primary" id="cfauto">Automatisch einrichten</button></div><div class="out"></div><div id="cfsteps"></div></div>
+  <div class="card"><h2>Cloudflare Zero Trust</h2>
     <p class="hint">WARP läuft hier im Container. Mit einem Service-Token meldet sich der Lautsprecher ohne Browser an und erreicht IDA im privaten Netz.</p>
     ${toggle("cloudflare.enabled", "WARP verwenden")}
     ${field("cloudflare.team", "Team-Name", "text", "Der Teil vor <code>.cloudflareaccess.com</code>.")}
@@ -256,22 +263,61 @@ function wakeTab() {
     <label>Zuletzt gehört</label><div id="heard" class="sub">–</div>
     ${saveRow()}</div>`;
 }
+let wifiData = null;
+function wifiTab() {
+  const w = wifiData;
+  if (!w) return `<div class="card"><h2>WLAN</h2><p class="sub">Suche Netze …</p></div>`;
+  const st = w.status;
+  if (!st.available) return `<div class="card"><h2>WLAN</h2><div class="msg bad">${esc(st.error || "WLAN-Steuerung nicht verfügbar")}</div></div>`;
+  return `<div class="card"><h2>Verbindung</h2><div class="grid">
+      <div class="stat"><span><i class="dot ${st.ssid || st.ethernet ? "good" : "bad"}"></i>Netz</span><b>${st.ssid ? esc(st.ssid) : st.ethernet ? "Kabel" : st.hotspot ? "Einrichtungs-WLAN" : "keins"}</b></div>
+      <div class="stat"><span>Adresse</span><b>${esc(st.ip || "–")}</b></div>
+      <div class="stat"><span>Name im Netz</span><b>${esc(st.hostname ? st.hostname + ".local" : "–")}</b></div></div></div>
+    <div class="card"><h2>WLAN wählen</h2>${w.error ? `<div class="msg bad">${esc(w.error)}</div>` : ""}
+      <ul class="trig">${w.networks.map((n, i) => `<li style="display:flex;align-items:center;gap:10px"><span style="flex:1;font-size:14px;color:var(--on-surface)">${n.in_use ? "<b>" : ""}${esc(n.ssid)}${n.in_use ? "</b> · verbunden" : ""}${n.saved && !n.in_use ? " · gespeichert" : ""}<br><small class="sub">${n.signal} % · ${esc(n.security || "offen")}</small></span>
+        ${n.in_use ? "" : `<button class="btn" data-wifi="${i}">Verbinden</button>`}${n.saved ? `<button class="btn" data-forget="${i}">Vergessen</button>` : ""}</li>`).join("") || `<li class="sub">Keine Netze gefunden.</li>`}</ul>
+      <div id="wifipw"></div>
+      <div class="row"><button class="btn" id="rescan">Neu suchen</button></div><div class="out"></div></div>
+    <div class="card"><h2>Einrichtungs-WLAN</h2>
+      <p class="hint">Findet der Pi kein Netz, öffnet er nach etwa 90 Sekunden dieses WLAN. Damit verbinden und <code>http://10.42.0.1:8080</code> öffnen.</p>
+      ${toggle("wifi.hotspot", "Einrichtungs-WLAN, wenn kein Netz da ist")}
+      ${field("wifi.hotspot_ssid", "Name")}
+      ${field("wifi.hotspot_password", "Passwort (mind. 8 Zeichen)", "password")}
+      ${saveRow()}</div>`;
+}
+async function loadWifi() { try { wifiData = await api("/api/wifi"); } catch (e) { wifiData = { status: { available: false, error: e.message }, networks: [] }; } if (tab === "wifi") render(); }
+
 function systemTab() {
   return `<div class="card"><h2>Passwort ändern</h2>
     <label>Altes Passwort</label><input type="password" id="old" autocomplete="current-password">
     <label>Neues Passwort</label><input type="password" id="new" autocomplete="new-password">
     <div class="row"><button class="btn primary" id="chpw">Ändern</button><button class="btn" id="logout">Abmelden</button></div><div class="out"></div></div>
-  <div class="card"><h2>System</h2><div class="row" style="margin-top:0"><button class="btn danger" data-act="/api/restart">Neu starten</button></div><div class="out"></div></div>
+  <div class="card"><h2>System</h2><div class="row" style="margin-top:0"><button class="btn" data-act="/api/restart">Programm neu starten</button><button class="btn danger" data-power="reboot">Pi neu starten</button><button class="btn danger" data-power="poweroff">Pi ausschalten</button></div><div class="out"></div></div>
   <div class="card"><h2>Protokoll</h2><div class="logs" id="logs"></div></div>`;
 }
 
-const TABS = { status: ["Status", statusTab], wake: ["Wake-Word", wakeTab], audio: ["Audio", audioTab], ida: ["IDA", idaTab], cloud: ["Cloudflare", cloudTab], system: ["System", systemTab] };
+const TABS = { status: ["Status", statusTab], wake: ["Wake-Word", wakeTab], audio: ["Audio", audioTab], ida: ["IDA", idaTab], cloud: ["Cloudflare", cloudTab], wifi: ["WLAN", wifiTab], system: ["System", systemTab] };
 async function render() {
   if (tab === "audio" && !devices) { try { devices = await api("/api/devices"); } catch { devices = { inputs: [], outputs: [] }; } }
   $("#app").innerHTML = `<header><div class="orb ${S.phase}"></div><div><h1>IDA Speaker</h1><div class="sub" id="phase">${PHASE[S.phase] || ""}</div></div></header>
     <nav>${Object.entries(TABS).map(([k, [n]]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${n}</button>`).join("")}</nav>
     <section class="on">${TABS[tab][1]()}</section>`;
-  document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+  document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { tab = b.dataset.tab; if (tab === "wifi") { wifiData = null; loadWifi(); } render(); });
+  document.querySelectorAll("[data-power]").forEach(b => b.onclick = () => {
+    if (confirm(b.dataset.power === "reboot" ? "Pi jetzt neu starten?" : "Pi jetzt ausschalten? Danach nur per Stecker wieder an.")) action(b, "/api/power", { action: b.dataset.power });
+  });
+  document.querySelectorAll("[data-wifi]").forEach(b => b.onclick = () => {
+    const n = wifiData.networks[b.dataset.wifi];
+    const go = async pw => { const out = $(".out", b.closest(".card")); out.innerHTML = `<div class="msg ok">Verbinde mit ${esc(n.ssid)} …</div>`;
+      try { const r = await api("/api/wifi/connect", { ssid: n.ssid, password: pw }); out.innerHTML = `<div class="msg ${r.ok ? "ok" : "bad"}">${esc(r.message)}</div>`; if (r.ok) setTimeout(loadWifi, 4000); }
+      catch (e) { out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; } };
+    if (n.saved || !n.security) return go("");
+    $("#wifipw").innerHTML = `<label>Passwort für „${esc(n.ssid)}“</label><input type="password" id="wpw" autocomplete="off"><div class="row"><button class="btn primary" id="wgo">Verbinden</button></div>`;
+    $("#wpw").focus(); $("#wgo").onclick = () => go($("#wpw").value); $("#wpw").onkeydown = e => e.key === "Enter" && go($("#wpw").value);
+  });
+  document.querySelectorAll("[data-forget]").forEach(b => b.onclick = () => action(b, "/api/wifi/forget", { ssid: wifiData.networks[b.dataset.forget].ssid }).then(loadWifi));
+  const rs = $("#rescan"); if (rs) rs.onclick = () => { wifiData = null; render(); loadWifi(); };
+  const ca = $("#cfauto"); if (ca) ca.onclick = () => cfAuto(ca, {});
   document.querySelectorAll("[data-save]").forEach(b => b.onclick = () => save(b));
   document.querySelectorAll("[data-act]").forEach(b => b.onclick = () => action(b, b.dataset.act));
   document.querySelectorAll("input[type=range]").forEach(r => r.oninput = () => { const s = $(`[data-show="${r.dataset.k}"]`); if (s) s.textContent = fmts[r.dataset.fmt](Number(r.value)); });
@@ -284,6 +330,24 @@ async function render() {
   };
   renderLive();
 }
+async function cfAuto(btn, extra) {
+  const card = btn.closest(".card"), out = $(".out", card), steps = $("#cfsteps");
+  const body = { api_token: $("#cftoken").value, ...cfPick, ...extra };
+  btn.disabled = true; out.innerHTML = `<div class="msg ok">Richte ein …</div>`;
+  try {
+    const r = await api("/api/cloudflare/auto", body);
+    steps.innerHTML = r.steps.length ? `<ul>${r.steps.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
+    if (r.needs) {
+      const label = r.needs === "account" ? "Konto" : "Tunnel zum IDA-Server";
+      $("#cfchoice").innerHTML = `<label>${label}</label><select id="cfsel">${r.choices.map(c => `<option value="${esc(c.id)}">${esc(c.name)}${c.status ? " (" + esc(c.status) + ")" : ""}</option>`).join("")}</select>`;
+      out.innerHTML = `<div class="msg ok">Bitte ${label} wählen und noch einmal auf „Automatisch einrichten“ drücken.</div>`;
+      btn.onclick = () => { cfPick[r.needs === "account" ? "account_id" : "tunnel_id"] = $("#cfsel").value; cfAuto(btn, {}); };
+    } else if (r.ok) { out.innerHTML = `<div class="msg ok">Fertig – WARP verbindet sich gleich.</div>`; $("#cfchoice").innerHTML = ""; cfPick = {}; }
+    else out.innerHTML = `<div class="msg bad">${esc(r.error)}</div>`;
+  } catch (e) { out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+  btn.disabled = false; await refresh(); renderLive();
+}
+let cfPick = {};
 boot();
 </script>
 </body>

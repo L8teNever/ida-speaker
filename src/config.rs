@@ -13,6 +13,7 @@ pub struct Config {
     pub echo: Echo,
     pub call: Call,
     pub cloudflare: Cloudflare,
+    pub wifi: Wifi,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -157,6 +158,26 @@ impl Default for Call {
     }
 }
 
+/// WLAN über NetworkManager des Pi. Ohne Netz macht der Lautsprecher ein eigenes Einrichtungs-WLAN auf.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Wifi {
+    pub hotspot: bool,
+    pub hotspot_ssid: String,
+    /// Mindestens 8 Zeichen (WPA2).
+    pub hotspot_password: String,
+}
+
+impl Default for Wifi {
+    fn default() -> Self {
+        Self {
+            hotspot: true,
+            hotspot_ssid: "IDA-Speaker-Setup".into(),
+            hotspot_password: "idaspeaker".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Cloudflare {
@@ -207,6 +228,8 @@ impl Config {
         let mut v = serde_json::to_value(self).unwrap_or_default();
         v["web"] = serde_json::json!({ "password_set": !self.web.password_hash.is_empty() });
         v["ida"]["device_key"] = serde_json::Value::String(mask(&self.ida.device_key));
+        v["wifi"]["hotspot_password"] =
+            serde_json::Value::String(mask(&self.wifi.hotspot_password));
         v["cloudflare"]["client_secret"] =
             serde_json::Value::String(mask(&self.cloudflare.client_secret));
         v
@@ -227,6 +250,15 @@ impl Config {
             || next.cloudflare.client_secret == mask(&self.cloudflare.client_secret)
         {
             next.cloudflare.client_secret = self.cloudflare.client_secret.clone();
+        }
+        if next.wifi.hotspot_password == mask(&self.wifi.hotspot_password)
+            || next.wifi.hotspot_password.chars().count() < 8
+        {
+            next.wifi.hotspot_password = self.wifi.hotspot_password.clone();
+        }
+        next.wifi.hotspot_ssid = next.wifi.hotspot_ssid.trim().chars().take(32).collect();
+        if next.wifi.hotspot_ssid.is_empty() {
+            next.wifi.hotspot_ssid = Wifi::default().hotspot_ssid;
         }
         next.ida.url = next.ida.url.trim().trim_end_matches('/').to_string();
         next.ida.device_name = next.ida.device_name.trim().to_lowercase();

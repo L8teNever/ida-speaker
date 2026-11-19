@@ -3,13 +3,16 @@
 //! mit Echo-Filter, damit Stella sich nicht selbst hört. Eingestellt wird alles über die Website (Port 8080).
 
 mod audio;
+mod cloudflare;
 mod config;
 mod dsp;
 mod session;
 mod state;
+mod system;
 mod wake;
 mod warp;
 mod web;
+mod wifi;
 
 use std::net::SocketAddr;
 
@@ -32,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     audio::spawn(app.clone());
     tokio::spawn(session::run(app.clone(), cmd_rx));
     tokio::spawn(warp::run(app.clone()));
+    tokio::spawn(wifi::run(app.clone()));
 
     let port: u16 = std::env::var("PORT")
         .ok()

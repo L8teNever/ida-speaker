@@ -42,6 +42,11 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/mute", post(mute))
         .route("/api/warp/reconnect", post(warp_reconnect))
         .route("/api/restart", post(restart))
+        .route("/api/power", post(power))
+        .route("/api/wifi", get(wifi_list))
+        .route("/api/wifi/connect", post(wifi_connect))
+        .route("/api/wifi/forget", post(wifi_forget))
+        .route("/api/cloudflare/auto", post(cloudflare_auto))
         .with_state(app)
 }
 
@@ -75,6 +80,7 @@ fn guard(app: &App, headers: &HeaderMap) -> Result<(), Response> {
         return Err(err(StatusCode::FORBIDDEN, "Erst ein Passwort festlegen"));
     }
     if authed(app, headers) {
+        app.last_web.store(now_s(), Ordering::Relaxed);
         Ok(())
     } else {
         Err(err(StatusCode::UNAUTHORIZED, "Bitte anmelden"))
@@ -206,6 +212,7 @@ async fn state(State(app): S, headers: HeaderMap) -> Response {
         "config": cfg.public(),
         "audio": s.audio,
         "warp": s.warp,
+        "wifi": s.wifi,
         "triggers": s.triggers,
         "logs": s.logs.iter().rev().take(80).collect::<Vec<_>>(),
         "conversation": s.last_text.iter().map(|(w, t)| json!({"who": w, "text": t})).collect::<Vec<_>>(),
@@ -337,6 +344,111 @@ async fn restart(State(app): S, headers: HeaderMap) -> Response {
         std::process::exit(0); // Docker startet den Container neu (restart: unless-stopped)
     });
     Json(json!({ "ok": true })).into_response()
+}
+
+#[derive(Deserialize)]
+struct Power {
+    action: String,
+}
+
+async fn power(State(app): S, headers: HeaderMap, Json(p): Json<Power>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    app.log(format!(
+        "Pi: {}",
+        if p.action == "reboot" {
+            "Neustart"
+        } else {
+            "Ausschalten"
+        }
+    ));
+    match crate::system::power(&p.action).await {
+        Ok(()) => Json(json!({ "ok": true, "message": "Wird ausgeführt …" })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response(),
+    }
+}
+
+async fn wifi_list(State(app): S, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let status = crate::wifi::status().await;
+    app.status.lock().unwrap().wifi = status.clone();
+    let (networks, error) = if status.available {
+        match crate::wifi::scan().await {
+            Ok(n) => (n, String::new()),
+            Err(e) => (vec![], format!("{e:#}")),
+        }
+    } else {
+        (vec![], String::new())
+    };
+    Json(json!({ "status": status, "networks": networks, "error": error })).into_response()
+}
+
+#[derive(Deserialize)]
+struct WifiConnect {
+    ssid: String,
+    #[serde(default)]
+    password: String,
+}
+
+async fn wifi_connect(State(app): S, headers: HeaderMap, Json(w): Json<WifiConnect>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    if w.ssid.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "WLAN-Name fehlt");
+    }
+    let on_hotspot = app.status.lock().unwrap().wifi.hotspot;
+    app.log(format!("Verbinde mit WLAN „{}“", w.ssid));
+    if on_hotspot {
+        // Die Seite läuft gerade über das Einrichtungs-WLAN: erst antworten, dann umschalten
+        let app2 = app.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match crate::wifi::connect(&w.ssid, &w.password).await {
+                Ok(_) => app2.log(format!("Mit „{}“ verbunden", w.ssid)),
+                Err(e) => app2.log(format!("WLAN „{}“: {e:#}", w.ssid)),
+            }
+        });
+        let host = app.status.lock().unwrap().wifi.hostname.clone();
+        return Json(json!({ "ok": true, "message": format!(
+            "Verbinde … Das Einrichtungs-WLAN geht jetzt aus. Verbinde dein Handy wieder mit deinem WLAN und öffne http://{}.local:8080. Klappt es nicht, ist das Einrichtungs-WLAN nach ein paar Minuten wieder da.",
+            if host.is_empty() { "raspberrypi" } else { &host }) })).into_response();
+    }
+    match crate::wifi::connect(&w.ssid, &w.password).await {
+        Ok(_) => Json(json!({ "ok": true, "message": format!("Mit „{}“ verbunden", w.ssid) }))
+            .into_response(),
+        Err(e) => Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct WifiForget {
+    ssid: String,
+}
+
+async fn wifi_forget(State(app): S, headers: HeaderMap, Json(w): Json<WifiForget>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    match crate::wifi::forget(&w.ssid).await {
+        Ok(()) => Json(json!({ "ok": true, "message": format!("„{}“ vergessen", w.ssid) }))
+            .into_response(),
+        Err(e) => Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response(),
+    }
+}
+
+async fn cloudflare_auto(
+    State(app): S,
+    headers: HeaderMap,
+    Json(req): Json<crate::cloudflare::Request>,
+) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    Json(crate::cloudflare::auto(&app, req).await).into_response()
 }
 
 #[cfg(test)]
