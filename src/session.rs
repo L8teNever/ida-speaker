@@ -23,6 +23,7 @@ pub struct Ticket {
 
 pub fn http() -> reqwest::Client {
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(10))
         .build()
         .expect("http client")
@@ -38,20 +39,54 @@ pub async fn ticket(cfg: &Config) -> anyhow::Result<Ticket> {
         .post(format!("{}/device/ticket", ida.url))
         .header("x-device-name", &ida.device_name)
         .header("x-device-key", &ida.device_key)
+        .headers(access_headers(cfg))
         .json(&serde_json::json!({ "prompt": cfg.assistant.prompt, "smart_home": cfg.assistant.smart_home }))
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("IDA nicht erreichbar: {e}"))?;
+    let json = res
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("json"));
+    let to_access = res
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("cloudflareaccess.com"));
     match res.status().as_u16() {
-        200 => Ok(res.json().await?),
+        200 if json => Ok(res.json().await?),
+        _ if to_access => anyhow::bail!(
+            "Cloudflare Access verlangt eine Anmeldung – Service-Token eintragen (Einrichtung → Verbindung) oder in Access freigeben"
+        ),
+        401 | 403 if !json => anyhow::bail!(
+            "Cloudflare Access blockt – der Service-Token ist falsch oder an der Voice-App nicht als „Service Auth“ freigegeben"
+        ),
         403 => anyhow::bail!(
             "IDA lehnt den Lautsprecher ab – Name oder Schlüssel falsch, oder nicht in VOICE_DEVICES"
         ),
         404 => anyhow::bail!(
             "Unter dieser Adresse läuft kein IDA-Voice-Dienst mit Lautsprecher-Unterstützung"
         ),
+        200 => {
+            anyhow::bail!("Unter dieser Adresse antwortet etwas anderes als der IDA-Voice-Dienst")
+        }
         s => anyhow::bail!("IDA antwortet mit HTTP {s}"),
     }
+}
+
+/// Cloudflare Access vor der Voice-Domain: Service-Token als Header (bei Ticket und WebSocket).
+pub fn access_headers(cfg: &Config) -> reqwest::header::HeaderMap {
+    let mut h = reqwest::header::HeaderMap::new();
+    let (id, secret) = (&cfg.ida.access_client_id, &cfg.ida.access_client_secret);
+    if !id.is_empty()
+        && !secret.is_empty()
+        && let (Ok(i), Ok(s)) = (id.parse(), secret.parse())
+    {
+        h.insert("cf-access-client-id", i);
+        h.insert("cf-access-client-secret", s);
+    }
+    h
 }
 
 pub fn ws_url(base: &str, ticket: &str) -> String {
@@ -64,6 +99,18 @@ pub fn ws_url(base: &str, ticket: &str) -> String {
         base.to_string()
     };
     format!("{ws}/live?ticket={ticket}&mode=speaker")
+}
+
+fn ws_request(
+    cfg: &Config,
+    ticket: &str,
+) -> anyhow::Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = ws_url(&cfg.ida.url, ticket).into_client_request()?;
+    for (k, v) in access_headers(cfg).iter() {
+        req.headers_mut().insert(k.clone(), v.clone());
+    }
+    Ok(req)
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,7 +178,7 @@ async fn talk(
     }
     let (ws, _) = tokio::time::timeout(
         Duration::from_secs(10),
-        tokio_tungstenite::connect_async(ws_url(&cfg.ida.url, &t.ticket)),
+        tokio_tungstenite::connect_async(ws_request(&cfg, &t.ticket)?),
     )
     .await
     .map_err(|_| anyhow::anyhow!("Verbindung zu IDA dauert zu lange"))??;

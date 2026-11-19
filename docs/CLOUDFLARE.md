@@ -1,10 +1,38 @@
-# Cloudflare Zero Trust (WARP im Container)
+# Cloudflare
+
+Es gibt zwei Wege, wie der Lautsprecher IDA über Cloudflare erreicht. Beide richtet der Einrichtungs-Assistent auf der Website Schritt für Schritt ein, mit Anleitung.
+
+| Weg | Wann | Was der Pi braucht |
+|---|---|---|
+| **Über die Domain** | IDA-Voice ist öffentlich erreichbar (z. B. `https://voice.example.com`), gern hinter Zero Trust | ggf. einen Access-Service-Token |
+| **Über WARP** | IDA soll nur im privaten Netz erreichbar sein | Service-Token für die WARP-Anmeldung, Route, Split Tunnel |
+
+## Über die Domain (Cloudflare Access)
+
+Ist die Voice-Domain mit Zero Trust gesichert, kommen Menschen mit ihrer Mail-Anmeldung durch und der Pi mit einem **Service-Token**. Bei jeder Anfrage, beim Ticket und beim WebSocket, schickt er `CF-Access-Client-Id` und `CF-Access-Client-Secret` mit. Ohne gültigen Token blockt Cloudflare schon am Rand, die Anfrage erreicht deinen Server gar nicht.
+
+**Automatisch:** Im Assistenten „Über die Domain“ wählen, einen API-Token eintragen und auf „Automatisch einrichten“ drücken. Der Pi
+1. sucht die Access-Apps, die die Voice-Domain schützen (auch Pfad-Apps wie `voice.example.com/device`),
+2. legt den Service-Token `ida-speaker-<gerätename>` an (Dauer: unbegrenzt),
+3. hängt an jede dieser Apps eine Policy *Service Auth* für genau diesen Token. Deine bisherigen Policies bleiben,
+4. trägt Client-ID und Secret bei sich ein und schaltet WARP aus.
+
+Ist die Domain nicht mit Access geschützt, meldet er das und braucht keinen Token.
+
+Rechte des API-Tokens (Konto): *Access: Service Tokens* (Bearbeiten), *Access: Apps and Policies* (Bearbeiten), *Access: Organizations, Identity Providers, and Groups* (Lesen).
+
+**Von Hand:**
+1. Zero Trust → Access → Service Auth → Service Tokens → *Create Service Token*. Dauer *Non-expiring*, Client-ID und Secret kopieren.
+2. Access → Applications → App der Voice-Domain → Policies → *Add a policy*: Action **Service Auth**, Include → *Service Token* → dein Token.
+3. Auf dem Pi unter **IDA** die Access Client-ID und das Secret eintragen.
+
+## Über WARP (privates Netz)
 
 Damit der Lautsprecher IDA über die **interne** Adresse erreicht, ohne öffentliche Domain und ohne offenen Port, läuft im Container der Cloudflare-WARP-Client. Er meldet sich per Service-Token an, ganz ohne Browser.
 
 Auf dem Pi selbst richtest du nichts ein. WARP leitet nur den Verkehr des Containers um, nicht den des ganzen Pi.
 
-## Mit einem Klick
+### Mit einem Klick
 
 Unter **Cloudflare → Mit einem Klick einrichten** einen API-Token eintragen und auf „Automatisch einrichten“ drücken. Trag vorher unter **IDA** die interne Adresse ein, damit der Lautsprecher weiß, wohin der Tunnel führen muss.
 
@@ -30,9 +58,9 @@ Der API-Token wird nicht gespeichert. Diese Rechte braucht er auf Kontoebene:
 
 Split Tunnel und WARP-Anmeldung gelten für das Standard-Geräteprofil, also für alle WARP-Geräte des Kontos.
 
-## Von Hand
+### Von Hand
 
-### Voraussetzungen in Cloudflare
+#### Voraussetzungen in Cloudflare
 
 1. **Tunnel zum IDA-Server** mit einer privaten Netz-Route, z. B. `10.0.0.0/24` oder die Docker-Netze des Servers (*Networks → Tunnels → Private networks*).
 2. **Service-Token** anlegen: *Access → Service auth → Service tokens → Create*. Client-ID und Client-Secret notieren, das Secret wird nur einmal angezeigt.
@@ -40,7 +68,7 @@ Split Tunnel und WARP-Anmeldung gelten für das Standard-Geräteprofil, also fü
 4. **Split Tunnels:** Standardmäßig *schließt* WARP private Bereiche (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) aus. Liegt IDA in so einem Bereich, nimm genau diesen Bereich aus der Ausschlussliste heraus, oder stell das Geräteprofil auf *Include* mit dem IDA-Netz um. Sonst geht der Verkehr nicht durch den Tunnel.
    Tipp: Lass das Heimnetz (z. B. `192.168.0.0/16`) ausgeschlossen, damit die Website des Pi im WLAN erreichbar bleibt.
 
-## Auf der Lautsprecher-Website
+#### Auf der Lautsprecher-Website
 
 Unter **Cloudflare**:
 
@@ -50,7 +78,7 @@ Unter **Cloudflare**:
 
 Nach dem Speichern schreibt der Lautsprecher `/var/lib/cloudflare-warp/mdm.xml` und startet `warp-svc` neu. Nach ein paar Sekunden steht dort „Connected“. Danach unter **IDA** die interne Adresse eintragen und „Verbindung testen“ drücken.
 
-## Wenn's hakt
+### Wenn's hakt
 
 - **„nicht verbunden“:** Client-ID und Secret prüfen, ebenso die Enrollment-Policy (Aktion *Service Auth*).
 - **Verbunden, aber IDA nicht erreichbar:** Split Tunnels prüfen (Punkt 4) und ob die Tunnel-Route das Ziel abdeckt.

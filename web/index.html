@@ -66,6 +66,13 @@
   .narrow { width: 100%; max-width: 380px; }
   ul.trig { list-style: none; margin: 0; padding: 0; } ul.trig li { padding: 6px 0; border-bottom: 1px solid var(--surface-high); font-size: 14px; }
   ul.trig li span { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  details.howto { background: var(--surface-high); border-radius: 14px; padding: 10px 14px; margin: 10px 0; }
+  details.howto summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+  details.howto ol { margin: 10px 0 4px; padding-left: 20px; font-size: 14px; } details.howto li { margin: 6px 0; }
+  .card h3 { font-size: 14px; font-weight: 500; margin: 18px 0 4px; color: var(--muted); }
+  label.pick { display: flex; gap: 10px; align-items: flex-start; background: var(--surface-high); border-radius: 14px; padding: 12px; margin: 8px 0; cursor: pointer; color: var(--on-surface); font-size: 14px; }
+  label.pick input { margin-top: 3px; accent-color: var(--accent); } label.pick small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  a { color: var(--accent); }
   code { background: var(--surface-high); padding: 1px 6px; border-radius: 6px; font-size: 13px; }
 </style>
 </head>
@@ -108,13 +115,14 @@ async function boot() {
   if (st.setup_needed) return authScreen(true);
   if (!st.logged_in) return authScreen(false);
   await refresh();
+  if (S && !S.config.ida.setup_done) tab = "setup";
   render();
   stateTimer = setInterval(async () => { await refresh(); renderLive(); }, 2500);
   levelTimer = setInterval(pollLevel, 200);
 }
 async function refresh() { try { S = await api("/api/state"); } catch {} }
 async function pollLevel() {
-  if (tab !== "status" && tab !== "audio" && tab !== "wake") return;
+  if (!["status", "audio", "wake", "setup"].includes(tab)) return;
   try {
     const l = await api("/api/level");
     const pct = Math.min(100, Math.sqrt(l.level / 32767) * 100);
@@ -140,6 +148,7 @@ function collect(root) {
     keys.slice(0, -1).forEach(k => o = o[k] ??= {});
     let v = el.type === "checkbox" ? el.checked : el.value;
     if (el.type === "range" || el.type === "number") v = Number(v);
+    if (el.type === "hidden" && (v === "true" || v === "false")) v = v === "true";
     if (el.type === "password" && !v) return;
     o[keys.at(-1)] = v;
   });
@@ -207,6 +216,10 @@ function idaTab() {
     ${field("ida.url", "Adresse des Voice-Dienstes", "url", "Am besten die interne Adresse im Cloudflare-Netz, z. B. <code>http://10.x.x.x:8086</code>.")}
     ${field("ida.device_name", "Gerätename (wie in VOICE_DEVICES)")}
     ${field("ida.device_key", "Geräte-Schlüssel", "password")}
+    <label>Verbindung</label><select data-k="ida.via">${Object.entries(VIA).map(([k, [n]]) => `<option value="${k}" ${(S.config.ida.via || "domain") === k ? "selected" : ""}>${n}</option>`).join("")}</select>
+    ${field("ida.access_client_id", "Cloudflare Access Client-ID (nur wenn die Domain mit Zero Trust gesichert ist)")}
+    ${field("ida.access_client_secret", "Cloudflare Access Client-Secret", "password")}
+    <p class="hint" style="margin:8px 0 0">Schritt für Schritt mit Anleitung: Reiter <b>Einrichtung</b>.</p>
     ${saveRow(`<button class="btn" data-act="/api/test/ida">Verbindung testen</button>`)}</div>
   <div class="card"><h2>Anweisungen für diesen Lautsprecher</h2>
     <p class="hint">Kommt nur in Gespräche über diesen Lautsprecher, zusätzlich zu den normalen Regeln von Stella. In der App und am Telefon bleibt alles wie immer.</p>
@@ -303,7 +316,126 @@ function systemTab() {
   <div class="card"><h2>Protokoll</h2><div class="logs" id="logs"></div></div>`;
 }
 
-const TABS = { status: ["Status", statusTab], wake: ["Wake-Word", wakeTab], audio: ["Audio", audioTab], ida: ["IDA", idaTab], cloud: ["Cloudflare", cloudTab], wifi: ["WLAN", wifiTab], system: ["System", systemTab] };
+// ---------------- Einrichtung Schritt für Schritt ----------------
+let wz = 0, wzMsg = "";
+const howto = (title, items) => `<details class="howto"><summary>${title}</summary><ol>${items.map(i => `<li>${i}</li>`).join("")}</ol></details>`;
+const VIA = {
+  domain: ["Über die Domain", "Der Pi erreicht IDA über die öffentliche HTTPS-Adresse des Voice-Dienstes. Liegt Cloudflare Access (Zero Trust) davor, zeigt er einen Service-Token vor. Kein VPN nötig, Pi und Server müssen nicht im selben Netz sein.", "https://voice.example.com"],
+  warp: ["Über das Cloudflare-Netz (WARP)", "Der Pi hängt sich per WARP ins private Zero-Trust-Netz und erreicht IDA über die interne Adresse. Nichts davon ist öffentlich.", "http://172.x.x.x:8000"],
+  lan: ["Im selben Netz", "Pi und IDA-Server stehen im selben Heimnetz. Keine Cloudflare-Einrichtung nötig.", "http://192.168.x.x:8086"],
+};
+function wzSteps() {
+  const c = S.config, via = c.ida.via || "domain";
+  return [
+    { t: "Willkommen", body: () => `<p>In ein paar Schritten ist der Lautsprecher fertig: Netz, IDA, Verbindung, Test, Audio und Wake-Word. Du kannst jeden Schritt später unter den Reitern oben wieder ändern.</p>` },
+    { t: "Netz", body: () => {
+        const w = S.wifi || {};
+        const online = w.ethernet || w.ssid;
+        return `<p>${online ? `<i class="dot good"></i>Der Pi ist online (${w.ssid ? "WLAN „" + esc(w.ssid) + "“" : "Kabel"}${w.ip ? ", " + esc(w.ip) : ""}).` : w.hotspot ? `<i class="dot warn"></i>Du bist gerade im Einrichtungs-WLAN. Wähl jetzt dein WLAN.` : `<i class="dot warn"></i>Der Pi hat noch kein Netz.`}</p>
+          <div class="row"><button class="btn" data-goto="wifi">${online ? "WLAN ändern" : "WLAN wählen"}</button></div>
+          <p class="hint" style="margin-top:12px">Nach dem Wechsel des WLANs erreichst du diese Seite unter <code>http://${esc(w.hostname || "raspberrypi")}.local:8080</code>.</p>`; } },
+    { t: "Lautsprecher in IDA anmelden", body: () => `
+        ${howto("Anleitung: Gerät in IDA eintragen", [
+          "Auf dem IDA-Server in der Datei <code>.env</code> die Zeile <code>VOICE_DEVICES=wohnzimmer</code> eintragen (mehrere Lautsprecher mit Komma: <code>wohnzimmer,kueche</code>).",
+          "IDA neu starten: <code>docker compose up -d</code> im IDA-Ordner.",
+          "In IDA angemeldet die Adresse <code>/api/v1/voice/devices</code> öffnen, z. B. <code>https://ida.example.com/api/v1/voice/devices</code>.",
+          "Dort stehen Name und Schlüssel. Beides hier eintragen.",
+        ])}
+        ${field("ida.device_name", "Gerätename (wie in VOICE_DEVICES)")}
+        ${field("ida.device_key", "Geräte-Schlüssel", "password")}` },
+    { t: "Wie erreicht der Pi IDA?", body: () => `
+        ${Object.entries(VIA).map(([k, [n, d]]) => `<label class="pick"><input type="radio" name="via" value="${k}" ${via === k ? "checked" : ""}><span><b>${n}</b><small>${d}</small></span></label>`).join("")}
+        <input type="hidden" data-k="ida.via" value="${esc(via)}">
+        ${field("ida.url", "Adresse des Voice-Dienstes", "url", `Zum Beispiel <code>${VIA[via][2]}</code>.`)}` },
+    { t: "Cloudflare", body: () => via === "lan" ? `<p><i class="dot good"></i>Im selben Netz brauchst du nichts bei Cloudflare. Weiter.</p>` : via === "domain" ? `
+        <p>Ist deine Voice-Domain mit Zero Trust gesichert, braucht der Pi einen <b>Service-Token</b>. Damit lässt Cloudflare ihn durch, während Menschen sich weiter mit ihrer Mail anmelden. Ist die Domain nicht gesichert, lass beides leer.</p>
+        <h3>Automatisch</h3>
+        <p class="hint">API-Token eintragen, der Pi legt den Service-Token an und gibt ihn an deiner Voice-App frei. Der API-Token wird nicht gespeichert.</p>
+        ${howto("Anleitung: API-Token erstellen", [
+          `In Cloudflare oben rechts auf dein Profil → <b>API-Token</b> → <b>Token erstellen</b> → <b>Benutzerdefiniertes Token</b>. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener">Direkt hin</a>`,
+          "Berechtigungen (Konto): <b>Access: Service Tokens</b> – Bearbeiten, <b>Access: Apps and Policies</b> – Bearbeiten, <b>Access: Organizations, Identity Providers, and Groups</b> – Lesen.",
+          "Token erstellen, kopieren und hier einfügen. Nach der Einrichtung kannst du ihn in Cloudflare wieder löschen.",
+        ])}
+        <label>API-Token</label><input type="password" id="cftoken" autocomplete="off"><div id="cfchoice"></div>
+        <div class="row"><button class="btn primary" id="wzcf" data-mode="domain">Automatisch einrichten</button></div><div class="out"></div><div id="cfsteps"></div>
+        <h3>Oder von Hand</h3>
+        ${howto("Anleitung: Service-Token von Hand", [
+          "Cloudflare Zero Trust öffnen → <b>Access</b> → <b>Service Auth</b> → <b>Service Tokens</b> → <b>Create Service Token</b>.",
+          "Name z. B. <code>ida-speaker-wohnzimmer</code>, Dauer <b>Non-expiring</b>. Client-ID und Client-Secret kopieren, das Secret siehst du nur einmal.",
+          "<b>Access</b> → <b>Applications</b> → die App deiner Voice-Domain → <b>Policies</b> → <b>Add a policy</b>.",
+          "Action <b>Service Auth</b> (nicht Allow), Include → <b>Service Token</b> → deinen Token wählen, speichern. Deine Mail-Policy bleibt, wie sie ist.",
+          "Client-ID und Secret unten eintragen und auf „Weiter“ drücken.",
+        ])}
+        ${field("ida.access_client_id", "Access Client-ID (…access)")}
+        ${field("ida.access_client_secret", "Access Client-Secret", "password")}` : `
+        <p>Der Pi verbindet sich per WARP mit deinem Zero-Trust-Netz.</p>
+        <h3>Automatisch</h3>
+        <p class="hint">Der Pi legt Service-Token, WARP-Anmeldung, Split Tunnel und Route selbst an. Der API-Token wird nicht gespeichert.</p>
+        ${howto("Anleitung: API-Token erstellen", [
+          `In Cloudflare: Profil → <b>API-Token</b> → <b>Token erstellen</b> → <b>Benutzerdefiniertes Token</b>. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener">Direkt hin</a>`,
+          "Berechtigungen (Konto): <b>Access: Service Tokens</b>, <b>Access: Apps and Policies</b>, <b>Zero Trust</b>, <b>Cloudflare Tunnel</b> – jeweils Bearbeiten; <b>Access: Organizations, Identity Providers, and Groups</b> – Lesen.",
+          "Token hier einfügen, danach kannst du ihn wieder löschen.",
+        ])}
+        <label>API-Token</label><input type="password" id="cftoken" autocomplete="off"><div id="cfchoice"></div>
+        <div class="row"><button class="btn primary" id="wzcf" data-mode="warp">Automatisch einrichten</button></div><div class="out"></div><div id="cfsteps"></div>
+        <h3>Oder von Hand</h3>
+        ${howto("Anleitung: WARP von Hand", [
+          "Zero Trust → <b>Access</b> → <b>Service Auth</b> → <b>Service Tokens</b> → Token anlegen (Non-expiring), Client-ID und Secret kopieren.",
+          "Zero Trust → <b>Settings</b> → <b>WARP Client</b> → <b>Device enrollment permissions</b> → Policy mit Action <b>Service Auth</b> für diesen Token.",
+          "<b>Networks</b> → <b>Tunnels</b>: Der Tunnel zum IDA-Server braucht eine private Route, die die IDA-Adresse abdeckt.",
+          "<b>Settings</b> → <b>WARP Client</b> → Geräteprofil → <b>Split Tunnels</b>: Die IDA-Adresse muss durch WARP gehen (im Include-Modus aufnehmen, im Exclude-Modus aus der Liste nehmen).",
+          "Team-Name (Teil vor <code>.cloudflareaccess.com</code>), Client-ID und Secret unten eintragen.",
+        ])}
+        <input type="hidden" data-k="cloudflare.enabled" value="true">
+        ${field("cloudflare.team", "Team-Name")}
+        ${field("cloudflare.client_id", "Client-ID")}
+        ${field("cloudflare.client_secret", "Client-Secret", "password")}` },
+    { t: "Verbindung testen", body: () => `<p>Jetzt holt der Pi testweise ein Ticket bei IDA.</p>
+        <div class="row"><button class="btn primary" data-act="/api/test/ida">Verbindung testen</button></div><div class="out"></div>
+        <p class="hint" style="margin-top:12px">Klappt es nicht? Die Meldung sagt, woran es liegt: Adresse, Schlüssel, VOICE_DEVICES oder Cloudflare. Mit „Zurück“ kommst du an jede Stelle.</p>` },
+    { t: "Mikrofon und Lautsprecher", body: () => {
+        const opt = (list, cur) => `<option value="">Standardgerät</option>` + (list || []).map(d => `<option value="${esc(d.id)}" ${d.id === cur ? "selected" : ""}>${esc(d.name)}</option>`).join("");
+        return `<label>Mikrofon</label><select data-k="audio.input">${opt(devices?.inputs, c.audio.input)}</select>
+          <label>Lautsprecher</label><select data-k="audio.output">${opt(devices?.outputs, c.audio.output)}</select>
+          ${range("audio.volume", "Lautstärke", 0, 200, 5, fmts.pct)}
+          <label>Mikrofon-Pegel (sprich etwas)</label><div class="meter"><i></i></div>
+          <div class="row"><button class="btn" data-act="/api/test/tone">Testton</button></div><div class="out"></div>
+          <p class="hint" style="margin-top:12px">Geräte ändern gilt nach „Weiter“. Bei USB-Geräten passt meist der Eintrag mit <code>plughw</code> oder dem Gerätenamen.</p>`; } },
+    { t: "Wake-Word", body: () => `${field("wake.word", "Wort, auf das er hört")}
+        ${range("wake.sensitivity", "Empfindlichkeit", 0, 1, 0.05, fmts.sens)}
+        <label>Zuletzt gehört</label><div id="heard" class="sub">–</div>
+        <p class="hint" style="margin-top:12px">Sag nach „Weiter“ einmal dein Wort. Unter „Zuletzt gehört“ siehst du, was er verstanden hat.</p>` },
+    { t: "Fertig", body: () => `<p><i class="dot good"></i>Alles eingerichtet. Sag „${esc(c.wake.word)}“ und rede los.</p>
+        <div class="row"><button class="btn" data-act="/api/talk">Gespräch jetzt testen</button></div><div class="out"></div>` },
+  ];
+}
+function setupTab() {
+  const steps = wzSteps(), st = steps[wz];
+  return `<div class="card wizard"><div class="sub">Schritt ${wz + 1} von ${steps.length}</div>
+    <div class="meter" style="margin:8px 0 14px"><i style="width:${(wz + 1) / steps.length * 100}%"></i></div>
+    <h2>${st.t}</h2>${st.body()}
+    ${wzMsg ? `<div class="msg bad">${esc(wzMsg)}</div>` : ""}
+    <div class="row" style="margin-top:18px">${wz ? `<button class="btn" id="wzback">Zurück</button>` : ""}
+      <button class="btn primary" id="wznext">${wz === steps.length - 1 ? "Abschließen" : "Weiter"}</button></div></div>`;
+}
+async function wzNext(dir) {
+  const card = $(".wizard"), steps = wzSteps();
+  wzMsg = "";
+  if (dir > 0) {
+    const patch = collect(card);
+    if (wz === steps.length - 1) { patch.ida = { ...(patch.ida || {}), setup_done: true }; }
+    if (patch.ida?.via && patch.ida.via !== "warp") patch.cloudflare = { ...(patch.cloudflare || {}), enabled: false };
+    if (Object.keys(patch).length) {
+      try { const r = await api("/api/config", patch); S.config = r.config; } catch (e) { wzMsg = e.message; render(); return; }
+    }
+    if (wz === steps.length - 1) { tab = "status"; wz = 0; render(); return; }
+  }
+  wz = Math.max(0, Math.min(steps.length - 1, wz + dir));
+  if (wzSteps()[wz].t === "Mikrofon und Lautsprecher" && !devices) { try { devices = await api("/api/devices"); } catch {} }
+  render();
+}
+
+const TABS = { setup: ["Einrichtung", setupTab], status: ["Status", statusTab], wake: ["Wake-Word", wakeTab], audio: ["Audio", audioTab], ida: ["IDA", idaTab], cloud: ["Cloudflare", cloudTab], wifi: ["WLAN", wifiTab], system: ["System", systemTab] };
 async function render() {
   if (tab === "audio" && !devices) { try { devices = await api("/api/devices"); } catch { devices = { inputs: [], outputs: [] }; } }
   $("#app").innerHTML = `<header><div class="orb ${S.phase}"></div><div><h1>IDA Speaker</h1><div class="sub" id="phase">${PHASE[S.phase] || ""}</div></div></header>
@@ -325,6 +457,11 @@ async function render() {
   document.querySelectorAll("[data-forget]").forEach(b => b.onclick = () => action(b, "/api/wifi/forget", { ssid: wifiData.networks[b.dataset.forget].ssid }).then(loadWifi));
   const rs = $("#rescan"); if (rs) rs.onclick = () => { wifiData = null; render(); loadWifi(); };
   const ca = $("#cfauto"); if (ca) ca.onclick = () => cfAuto(ca, {});
+  const wc = $("#wzcf"); if (wc) wc.onclick = () => { cfPick.mode = wc.dataset.mode; cfAuto(wc, {}); };
+  const wn = $("#wznext"); if (wn) wn.onclick = () => wzNext(1);
+  const wb = $("#wzback"); if (wb) wb.onclick = () => wzNext(-1);
+  document.querySelectorAll("input[name=via]").forEach(r => r.onchange = () => { $("[data-k='ida.via']").value = r.value; S.config.ida.via = r.value; const u = $("[data-k='ida.url']"); const cur = u.value; render(); $("[data-k='ida.url']").value = cur; });
+  document.querySelectorAll("[data-goto]").forEach(b => b.onclick = () => { tab = b.dataset.goto; if (tab === "wifi") { wifiData = null; loadWifi(); } render(); });
   document.querySelectorAll("[data-save]").forEach(b => b.onclick = () => save(b));
   document.querySelectorAll("[data-act]").forEach(b => b.onclick = () => action(b, b.dataset.act));
   document.querySelectorAll("input[type=range]").forEach(r => r.oninput = () => { const s = $(`[data-show="${r.dataset.k}"]`); if (s) s.textContent = fmts[r.dataset.fmt](Number(r.value)); });
@@ -349,7 +486,12 @@ async function cfAuto(btn, extra) {
       $("#cfchoice").innerHTML = `<label>${label}</label><select id="cfsel">${r.choices.map(c => `<option value="${esc(c.id)}">${esc(c.name)}${c.status ? " (" + esc(c.status) + ")" : ""}</option>`).join("")}</select>`;
       out.innerHTML = `<div class="msg ok">Bitte ${label} wählen und noch einmal auf „Automatisch einrichten“ drücken.</div>`;
       btn.onclick = () => { cfPick[r.needs === "account" ? "account_id" : "tunnel_id"] = $("#cfsel").value; cfAuto(btn, {}); };
-    } else if (r.ok) { out.innerHTML = `<div class="msg ok">Fertig – WARP verbindet sich gleich.</div>`; $("#cfchoice").innerHTML = ""; cfPick = {}; }
+    } else if (r.ok) {
+      const mode = cfPick.mode; cfPick = {};
+      await refresh();
+      if (tab === "setup") { render(); const o = $(".out", $(".wizard")); if (o) o.innerHTML = `<div class="msg ok">Fertig – eingetragen. Weiter mit „Weiter“.</div>`; const st = $("#cfsteps"); if (st) st.innerHTML = `<ul>${r.steps.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`; btn.disabled = false; return; }
+      out.innerHTML = `<div class="msg ok">${mode === "domain" ? "Fertig – Service-Token eingetragen." : "Fertig – WARP verbindet sich gleich."}</div>`; $("#cfchoice").innerHTML = "";
+    }
     else out.innerHTML = `<div class="msg bad">${esc(r.error)}</div>`;
   } catch (e) { out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
   btn.disabled = false; await refresh(); renderLive();

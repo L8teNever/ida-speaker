@@ -20,6 +20,9 @@ pub struct Request {
     pub account_id: String,
     #[serde(default)]
     pub tunnel_id: String,
+    /// "domain" (Service-Token für Access vor der Voice-Domain) oder "warp"; leer = wie unter IDA eingestellt.
+    #[serde(default)]
+    pub mode: String,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -128,6 +131,210 @@ pub fn target_ip(url: &str) -> Option<Ipv4Addr> {
     u.host_str()?.parse().ok()
 }
 
+async fn ensure_token(
+    cf: &Cf,
+    a: &str,
+    cfg: &crate::config::Config,
+    r: &mut Report,
+) -> anyhow::Result<(String, String, String, String)> {
+    let name = format!(
+        "ida-speaker-{}",
+        if cfg.ida.device_name.is_empty() {
+            "lautsprecher"
+        } else {
+            &cfg.ida.device_name
+        }
+    );
+    let tokens = cf.get(&format!("{a}/access/service_tokens")).await?;
+    let existing = tokens
+        .as_array()
+        .and_then(|t| t.iter().find(|x| x["name"] == name.as_str()).cloned());
+    let (id, client_id, secret) = match existing {
+        Some(t) => {
+            let id = t["id"].as_str().unwrap_or_default().to_string();
+            let rot = cf
+                .post(&format!("{a}/access/service_tokens/{id}/rotate"), json!({}))
+                .await?;
+            r.steps.push(format!("Service-Token „{name}“ erneuert"));
+            (
+                id,
+                t["client_id"].as_str().unwrap_or_default().to_string(),
+                rot["client_secret"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        }
+        None => {
+            let t = cf
+                .post(
+                    &format!("{a}/access/service_tokens"),
+                    json!({"name": name, "duration": "forever"}),
+                )
+                .await?;
+            r.steps.push(format!("Service-Token „{name}“ angelegt"));
+            (
+                t["id"].as_str().unwrap_or_default().to_string(),
+                t["client_id"].as_str().unwrap_or_default().to_string(),
+                t["client_secret"].as_str().unwrap_or_default().to_string(),
+            )
+        }
+    };
+    if client_id.is_empty() || secret.is_empty() {
+        anyhow::bail!("Cloudflare hat keinen Service-Token zurückgegeben");
+    }
+    Ok((id, client_id, secret, name))
+}
+
+/// Alle Access-Apps (seitenweise).
+async fn list_apps(cf: &Cf, a: &str) -> anyhow::Result<Vec<Value>> {
+    let mut all = Vec::new();
+    for page in 1..=20 {
+        let got = cf
+            .get(&format!("{a}/access/apps?page={page}&per_page=100"))
+            .await?;
+        let list = got.as_array().cloned().unwrap_or_default();
+        let n = list.len();
+        all.extend(list);
+        if n < 100 {
+            break;
+        }
+    }
+    Ok(all)
+}
+
+/// Hängt eine Policy „Service Auth“ für den Token an die App. `false` = war schon erlaubt.
+async fn allow_token(
+    cf: &Cf,
+    a: &str,
+    app: &Value,
+    token_id: &str,
+    name: &str,
+) -> anyhow::Result<bool> {
+    let policies = app["policies"].as_array().cloned().unwrap_or_default();
+    let has = policies.iter().any(|p| {
+        p["decision"] == "non_identity"
+            && p["include"].as_array().is_some_and(|inc| {
+                inc.iter().any(|i| {
+                    i["service_token"]["token_id"] == token_id
+                        || i.get("any_valid_service_token").is_some()
+                })
+            })
+    });
+    if has {
+        return Ok(false);
+    }
+    let p = cf
+        .post(
+            &format!("{a}/access/policies"),
+            json!({"name": format!("{name} (Service Auth)"), "decision": "non_identity", "include": [{"service_token": {"token_id": token_id}}]}),
+        )
+        .await?;
+    let pid = p["id"].as_str().unwrap_or_default().to_string();
+    let mut body = app.clone();
+    if let Some(o) = body.as_object_mut() {
+        for k in ["id", "aud", "uid", "created_at", "updated_at"] {
+            o.remove(k);
+        }
+    }
+    let mut refs: Vec<Value> = policies
+        .iter()
+        .enumerate()
+        .map(|(i, p)| json!({"id": p["id"], "precedence": i + 1}))
+        .collect();
+    refs.push(json!({"id": pid, "precedence": refs.len() + 1}));
+    body["policies"] = Value::Array(refs);
+    let app_id = app["id"].as_str().unwrap_or_default();
+    cf.put(&format!("{a}/access/apps/{app_id}"), body).await?;
+    Ok(true)
+}
+
+/// Domains einer Access-App (`domain` und `self_hosted_domains`/`destinations`).
+fn app_domains(app: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(d) = app["domain"].as_str() {
+        out.push(d.to_string());
+    }
+    for k in ["self_hosted_domains", "destinations"] {
+        for d in app[k].as_array().into_iter().flatten() {
+            if let Some(x) = d.as_str().or_else(|| d["uri"].as_str()) {
+                out.push(x.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Greift die Domain einer App (z. B. `voice.example.com` oder `voice.example.com/device`) für die Wege des Lautsprechers?
+pub fn app_covers(domain: &str, host: &str) -> bool {
+    let d = domain
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let (dh, path) = d
+        .split_once('/')
+        .map(|(h, p)| (h, format!("/{p}")))
+        .unwrap_or((d, String::new()));
+    let host_ok = dh.eq_ignore_ascii_case(host)
+        || dh
+            .strip_prefix("*.")
+            .is_some_and(|w| host.ends_with(&format!(".{w}")));
+    let path = path.trim_end_matches('*').trim_end_matches('/');
+    host_ok && (path.is_empty() || "/device/ticket".starts_with(path) || "/live".starts_with(path))
+}
+
+/// Über die Domain: Service-Token für die Access-App(s), die die Voice-Domain schützen.
+async fn domain(app: &Arc<App>, cf: &Cf, a: &str, r: &mut Report) -> anyhow::Result<()> {
+    let cfg = app.cfg();
+    let url = reqwest::Url::parse(&cfg.ida.url).map_err(|_| {
+        anyhow::anyhow!("Erst unter IDA die Adresse eintragen, z. B. https://voice.example.com")
+    })?;
+    let host = url.host_str().unwrap_or_default().to_string();
+    if host.parse::<Ipv4Addr>().is_ok() {
+        anyhow::bail!("Für „über die Domain“ muss unter IDA eine Domain stehen, keine IP");
+    }
+    let apps: Vec<Value> = list_apps(cf, a)
+        .await?
+        .into_iter()
+        .filter(|x| {
+            x["type"] == "self_hosted" && app_domains(x).iter().any(|d| app_covers(d, &host))
+        })
+        .collect();
+    let mut next = cfg.clone();
+    next.ida.via = "domain".into();
+    next.cloudflare.enabled = false;
+    if apps.is_empty() {
+        r.steps.push(format!(
+            "{host} ist nicht mit Cloudflare Access geschützt – kein Service-Token nötig"
+        ));
+        next.ida.access_client_id.clear();
+        next.ida.access_client_secret.clear();
+        app.save_config(next)?;
+        return Ok(());
+    }
+    let (token_id, client_id, secret, name) = ensure_token(cf, a, &cfg, r).await?;
+    for x in &apps {
+        let label = x["name"].as_str().unwrap_or("App").to_string();
+        if allow_token(cf, a, x, &token_id, &name).await? {
+            r.steps.push(format!(
+                "Access-App „{label}“: Service Auth für den Lautsprecher erlaubt"
+            ));
+        } else {
+            r.steps.push(format!(
+                "Access-App „{label}“: Lautsprecher war schon erlaubt"
+            ));
+        }
+    }
+    next.ida.access_client_id = client_id;
+    next.ida.access_client_secret = secret;
+    app.save_config(next)?;
+    r.steps
+        .push("Service-Token auf dem Lautsprecher eingetragen, WARP aus".into());
+    Ok(())
+}
+
 pub async fn auto(app: &Arc<App>, req: Request) -> Report {
     let mut r = Report::default();
     match run(app, req, &mut r).await {
@@ -178,6 +385,15 @@ async fn run(app: &Arc<App>, req: Request, r: &mut Report) -> anyhow::Result<()>
     };
     let a = format!("/accounts/{account}");
 
+    let mode = if req.mode.is_empty() {
+        cfg.ida.via.clone()
+    } else {
+        req.mode.clone()
+    };
+    if mode == "domain" {
+        return domain(app, &cf, &a, r).await;
+    }
+
     // 2. Team-Name
     let org = cf.get(&format!("{a}/access/organizations")).await?;
     let team = org["auth_domain"]
@@ -193,97 +409,21 @@ async fn run(app: &Arc<App>, req: Request, r: &mut Report) -> anyhow::Result<()>
     r.steps.push(format!("Team „{team}“ gefunden"));
 
     // 3. Service-Token (gibt es ihn schon, bekommt er ein neues Secret)
-    let name = format!(
-        "ida-speaker-{}",
-        if cfg.ida.device_name.is_empty() {
-            "lautsprecher"
-        } else {
-            &cfg.ida.device_name
-        }
-    );
-    let tokens = cf.get(&format!("{a}/access/service_tokens")).await?;
-    let existing = tokens
-        .as_array()
-        .and_then(|t| t.iter().find(|x| x["name"] == name.as_str()).cloned());
-    let (token_id, client_id, client_secret) = match existing {
-        Some(t) => {
-            let id = t["id"].as_str().unwrap_or_default().to_string();
-            let rot = cf
-                .post(&format!("{a}/access/service_tokens/{id}/rotate"), json!({}))
-                .await?;
-            r.steps.push(format!("Service-Token „{name}“ erneuert"));
-            (
-                id,
-                t["client_id"].as_str().unwrap_or_default().to_string(),
-                rot["client_secret"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-            )
-        }
-        None => {
-            let t = cf
-                .post(
-                    &format!("{a}/access/service_tokens"),
-                    json!({"name": name, "duration": "forever"}),
-                )
-                .await?;
-            r.steps.push(format!("Service-Token „{name}“ angelegt"));
-            (
-                t["id"].as_str().unwrap_or_default().to_string(),
-                t["client_id"].as_str().unwrap_or_default().to_string(),
-                t["client_secret"].as_str().unwrap_or_default().to_string(),
-            )
-        }
-    };
-    if client_id.is_empty() || client_secret.is_empty() {
-        anyhow::bail!("Cloudflare hat keinen Service-Token zurückgegeben");
-    }
+    let (token_id, client_id, client_secret, name) = ensure_token(&cf, &a, &cfg, r).await?;
 
     // 4. WARP-Anmeldung mit diesem Token erlauben (Policy „Service Auth“ an der WARP-App)
-    let apps = cf.get(&format!("{a}/access/apps")).await?;
+    let apps = list_apps(&cf, &a).await?;
     let warp_app = apps
-        .as_array()
-        .and_then(|l| l.iter().find(|x| x["type"] == "warp").cloned())
+        .iter()
+        .find(|x| x["type"] == "warp")
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("WARP-Anmeldung ist in Zero Trust noch nicht eingerichtet (Einstellungen → WARP-Client → Geräteregistrierung)"))?;
-    let policies = warp_app["policies"].as_array().cloned().unwrap_or_default();
-    let has = policies.iter().any(|p| {
-        p["decision"] == "non_identity"
-            && p["include"].as_array().is_some_and(|inc| {
-                inc.iter().any(|i| {
-                    i["service_token"]["token_id"] == token_id.as_str()
-                        || i.get("any_valid_service_token").is_some()
-                })
-            })
-    });
-    if has {
-        r.steps
-            .push("WARP-Anmeldung per Service-Token war schon erlaubt".into());
-    } else {
-        let p = cf
-            .post(
-                &format!("{a}/access/policies"),
-                json!({"name": format!("{name} (Service Auth)"), "decision": "non_identity", "include": [{"service_token": {"token_id": token_id}}]}),
-            )
-            .await?;
-        let pid = p["id"].as_str().unwrap_or_default().to_string();
-        let mut body = warp_app.clone();
-        if let Some(o) = body.as_object_mut() {
-            for k in ["id", "aud", "uid", "created_at", "updated_at"] {
-                o.remove(k);
-            }
-        }
-        let mut refs: Vec<Value> = policies
-            .iter()
-            .enumerate()
-            .map(|(i, p)| json!({"id": p["id"], "precedence": i + 1}))
-            .collect();
-        refs.push(json!({"id": pid, "precedence": refs.len() + 1}));
-        body["policies"] = Value::Array(refs);
-        let app_id = warp_app["id"].as_str().unwrap_or_default();
-        cf.put(&format!("{a}/access/apps/{app_id}"), body).await?;
+    if allow_token(&cf, &a, &warp_app, &token_id, &name).await? {
         r.steps
             .push("WARP-Anmeldung per Service-Token erlaubt".into());
+    } else {
+        r.steps
+            .push("WARP-Anmeldung per Service-Token war schon erlaubt".into());
     }
 
     // Ab hier kann der Lautsprecher sich schon verbinden
@@ -292,6 +432,7 @@ async fn run(app: &Arc<App>, req: Request, r: &mut Report) -> anyhow::Result<()>
     next.cloudflare.team = team;
     next.cloudflare.client_id = client_id;
     next.cloudflare.client_secret = client_secret;
+    next.ida.via = "warp".into();
     app.save_config(next)?;
     r.steps
         .push("Auf dem Lautsprecher eingetragen – WARP verbindet sich".into());
@@ -410,6 +551,25 @@ mod tests {
             assert!(rest.iter().any(|c| contains(c, p)), "{probe}");
         }
         assert_eq!(subtract("10.0.0.0/8", ip), vec!["10.0.0.0/8"]);
+    }
+
+    #[test]
+    fn access_app_matching() {
+        assert!(app_covers("voice.example.com", "voice.example.com"));
+        assert!(app_covers(
+            "https://voice.example.com/",
+            "voice.example.com"
+        ));
+        assert!(app_covers("voice.example.com/device", "voice.example.com"));
+        assert!(app_covers("voice.example.com/live*", "voice.example.com"));
+        assert!(app_covers("*.example.com", "voice.example.com"));
+        assert!(!app_covers("voice.example.com/telnyx", "voice.example.com"));
+        assert!(!app_covers("ida.example.com", "voice.example.com"));
+        let app = json!({"domain": "voice.example.com", "destinations": [{"type": "public", "uri": "voice2.example.com"}]});
+        assert_eq!(
+            app_domains(&app),
+            vec!["voice.example.com", "voice2.example.com"]
+        );
     }
 
     #[test]

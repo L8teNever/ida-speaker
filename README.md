@@ -34,12 +34,12 @@ Er installiert Docker, falls es fehlt, und richtet den Autostart ein: Nach jedem
 
 Statt des Skripts geht auch die [`docker-compose.yml`](docker-compose.yml) aus diesem Repo (`docker compose up -d`).
 
-Dann `http://<pi>:8080` oder `http://<hostname>.local:8080` öffnen:
+Dann `http://<pi>:8080` oder `http://<hostname>.local:8080` öffnen. Beim ersten Mal führt ein **Einrichtungs-Assistent** Schritt für Schritt durch alles, mit Anleitung für IDA und Cloudflare:
 
 1. **Passwort** für die Seite festlegen.
 2. **WLAN** (falls der Pi noch am Kabel hängt oder im Einrichtungs-WLAN ist): Netz wählen, Passwort eingeben.
 3. **IDA:** Adresse des Voice-Dienstes, Gerätename und Schlüssel eintragen, dann „Verbindung testen“ ([so geht's](docs/IDA.md)).
-4. **Cloudflare:** API-Token eintragen und „Automatisch einrichten“ drücken ([was dabei passiert](docs/CLOUDFLARE.md)).
+4. **Verbindung:** über die Domain (auch hinter Zero Trust, per Service-Token), über WARP ins private Netz oder im selben Netz. Cloudflare richtet „Automatisch einrichten“ mit einem API-Token ein ([was dabei passiert](docs/CLOUDFLARE.md)).
 5. **Audio:** Mikrofon und Lautsprecher wählen, Testton abspielen, Pegel prüfen.
 6. **Wake-Word:** Wort eintragen und Empfindlichkeit einstellen.
 

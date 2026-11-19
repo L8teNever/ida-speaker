@@ -33,6 +33,14 @@ pub struct Ida {
     pub device_name: String,
     /// Schlüssel des Lautsprechers (aus IDA, `GET /api/v1/voice/devices`).
     pub device_key: String,
+    /// Wie der Lautsprecher IDA erreicht: "domain" (öffentliche Adresse, ggf. hinter Cloudflare Access),
+    /// "warp" (privates Netz über Cloudflare WARP) oder "lan" (gleiches Netz).
+    pub via: String,
+    /// Service-Token für Cloudflare Access vor der Voice-Domain (leer = keine Access-Sperre).
+    pub access_client_id: String,
+    pub access_client_secret: String,
+    /// Einrichtungs-Assistent einmal durchlaufen.
+    pub setup_done: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -240,6 +248,8 @@ impl Config {
         let mut v = serde_json::to_value(self).unwrap_or_default();
         v["web"] = serde_json::json!({ "password_set": !self.web.password_hash.is_empty() });
         v["ida"]["device_key"] = serde_json::Value::String(mask(&self.ida.device_key));
+        v["ida"]["access_client_secret"] =
+            serde_json::Value::String(mask(&self.ida.access_client_secret));
         v["wifi"]["hotspot_password"] =
             serde_json::Value::String(mask(&self.wifi.hotspot_password));
         v["cloudflare"]["client_secret"] =
@@ -273,6 +283,20 @@ impl Config {
             next.wifi.hotspot_ssid = Wifi::default().hotspot_ssid;
         }
         next.assistant.prompt = next.assistant.prompt.trim().chars().take(4000).collect();
+        if next.ida.access_client_secret == mask(&self.ida.access_client_secret)
+            || (next.ida.access_client_secret.trim().is_empty()
+                && !next.ida.access_client_id.trim().is_empty())
+        {
+            next.ida.access_client_secret = self.ida.access_client_secret.clone();
+        }
+        if next.ida.access_client_id.trim().is_empty() {
+            next.ida.access_client_secret.clear();
+        }
+        next.ida.access_client_id = next.ida.access_client_id.trim().to_string();
+        next.ida.access_client_secret = next.ida.access_client_secret.trim().to_string();
+        if !matches!(next.ida.via.as_str(), "domain" | "warp" | "lan") {
+            next.ida.via = String::new();
+        }
         next.ida.url = next.ida.url.trim().trim_end_matches('/').to_string();
         next.ida.device_name = next.ida.device_name.trim().to_lowercase();
         next.ida.device_key = next.ida.device_key.trim().to_string();
