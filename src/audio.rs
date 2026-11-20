@@ -142,7 +142,7 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
             match build_output(
                 &dev,
                 fmt,
-                sc.clone(),
+                sc,
                 app.clone(),
                 volume.clone(),
                 reference.clone(),
