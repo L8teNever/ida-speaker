@@ -31,6 +31,41 @@ pub fn http() -> reqwest::Client {
 
 /// Holt ein Ticket (gilt eine Minute). Auch der Test-Knopf auf der Website nutzt das.
 pub async fn ticket(cfg: &Config) -> anyhow::Result<Ticket> {
+    ticket_for(cfg, false).await
+}
+
+/// Was beim Ticket mitgeht: Anweisungen, Smart Home und beim zweiten Namen die Befehls-Persönlichkeit.
+pub fn ticket_body(cfg: &Config, quick: bool) -> serde_json::Value {
+    if !quick {
+        return serde_json::json!({ "prompt": cfg.assistant.prompt, "smart_home": cfg.assistant.smart_home });
+    }
+    let q = &cfg.quick;
+    let prompt = [cfg.assistant.prompt.trim(), q.prompt.trim()]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let name = if q.name.is_empty() {
+        capitalize(&cfg.wake.second_word)
+    } else {
+        q.name.clone()
+    };
+    serde_json::json!({ "prompt": prompt, "smart_home": q.smart_home, "name": name, "voice": q.voice, "oneshot": q.oneshot })
+}
+
+fn capitalize(s: &str) -> String {
+    s.split_whitespace()
+        .map(|w| {
+            let mut c = w.chars();
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+async fn ticket_for(cfg: &Config, quick: bool) -> anyhow::Result<Ticket> {
     let ida = &cfg.ida;
     if ida.url.is_empty() || ida.device_name.is_empty() || ida.device_key.is_empty() {
         anyhow::bail!("IDA ist noch nicht eingerichtet (Adresse, Gerätename, Schlüssel)");
@@ -40,7 +75,7 @@ pub async fn ticket(cfg: &Config) -> anyhow::Result<Ticket> {
         .header("x-device-name", &ida.device_name)
         .header("x-device-key", &ida.device_key)
         .headers(access_headers(cfg))
-        .json(&serde_json::json!({ "prompt": cfg.assistant.prompt, "smart_home": cfg.assistant.smart_home }))
+        .json(&ticket_body(cfg, quick))
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("IDA nicht erreichbar: {e}"))?;
@@ -134,10 +169,10 @@ struct ServerMsg {
 /// Nimmt Befehle (Wake-Word, Knopf) entgegen und führt immer höchstens ein Gespräch.
 pub async fn run(app: Arc<App>, mut commands: mpsc::UnboundedReceiver<Command>) {
     while let Some(cmd) = commands.recv().await {
-        let Command::Start(source) = cmd else {
+        let Command::Start { source, quick, pre } = cmd else {
             continue;
         };
-        let result = match talk(&app, &mut commands).await {
+        let result = match talk(&app, &mut commands, quick, pre).await {
             Ok(r) => r,
             Err(e) => {
                 app.log(format!("Gespräch: {e:#}"));
@@ -159,13 +194,21 @@ pub async fn run(app: Arc<App>, mut commands: mpsc::UnboundedReceiver<Command>) 
 async fn talk(
     app: &Arc<App>,
     commands: &mut mpsc::UnboundedReceiver<Command>,
+    quick: bool,
+    pre: Vec<i16>,
 ) -> anyhow::Result<String> {
     let cfg = app.cfg();
     app.set_phase(Phase::Connecting);
     if cfg.audio.tones {
         audio::beep(app, Beep::Listen);
     }
-    let t = ticket(&cfg).await?;
+    // Mikrofon schon beim Verbinden mitschneiden (bis 8 s): beim Befehl („Computer, Licht an“) zählt jedes Wort
+    let (mic_tx, mut mic_rx) = mpsc::channel::<Vec<i16>>(800);
+    if quick {
+        *app.mic.lock().unwrap() = Some(mic_tx.clone());
+        app.talking.store(true, Ordering::Relaxed);
+    }
+    let t = ticket_for(&cfg, quick).await?;
     if t.busy {
         anyhow::bail!(
             "{} ist gerade in zwei Gesprächen",
@@ -180,7 +223,6 @@ async fn talk(
     .map_err(|_| anyhow::anyhow!("Verbindung zu IDA dauert zu lange"))??;
     let (mut tx, mut rx) = ws.split();
 
-    let (mic_tx, mut mic_rx) = mpsc::channel::<Vec<i16>>(100);
     *app.mic.lock().unwrap() = Some(mic_tx);
     app.talking.store(true, Ordering::Relaxed);
     app.set_phase(Phase::Talking);
@@ -189,7 +231,13 @@ async fn talk(
 
     let started = Instant::now();
     let max = Duration::from_secs(cfg.call.max_minutes as u64 * 60);
-    let silence = Duration::from_secs(cfg.call.silence_end_s as u64);
+    let mut silence = Duration::from_secs(cfg.call.silence_end_s as u64);
+    if quick && cfg.quick.oneshot {
+        silence = silence.min(Duration::from_secs(6));
+    }
+    // Bis IDA „ready“ meldet, sammeln: zuerst das, was nach dem Namen schon gesagt wurde
+    let mut ready = !quick;
+    let mut held: Vec<u8> = pre.iter().flat_map(|s| s.to_le_bytes()).collect();
     let mut last_activity = Instant::now();
     let mut voice = VoiceOut::new(app.output_rate());
     let mut ending: Option<Instant> = None;
@@ -203,7 +251,9 @@ async fn talk(
                 if crate::dsp::rms_i16(&pcm) >= cfg.call.speech_rms {
                     last_activity = Instant::now();
                 }
-                if ending.is_none() {
+                if !ready {
+                    held.extend(pcm.iter().flat_map(|s| s.to_le_bytes()));
+                } else if ending.is_none() {
                     batch.extend(pcm.iter().flat_map(|s| s.to_le_bytes()));
                     if batch.len() >= 1280 { // 40 ms
                         tx.send(Message::binary(std::mem::take(&mut batch))).await?;
@@ -220,7 +270,12 @@ async fn talk(
                     Message::Text(t) => {
                         let Ok(m) = serde_json::from_str::<ServerMsg>(&t) else { continue };
                         match m.kind.as_str() {
-                            "ready" => {}
+                            "ready" => {
+                                ready = true;
+                                for c in std::mem::take(&mut held).chunks(1280) {
+                                    tx.send(Message::binary(c.to_vec())).await?;
+                                }
+                            }
                             "text" => { app.said(&m.who, &m.text); last_activity = Instant::now(); }
                             "tool" => if m.running { app.log(format!("Werkzeug: {}", m.name)); last_activity = Instant::now(); },
                             "interrupted" => app.clear_playback(),
@@ -298,6 +353,25 @@ mod tests {
             ws_url("https://voice.example.com/", "t"),
             "wss://voice.example.com/live?ticket=t&mode=speaker"
         );
+    }
+
+    #[test]
+    fn quick_ticket_body() {
+        let mut cfg = Config::default();
+        cfg.assistant.prompt = "Wohnzimmer".into();
+        cfg.wake.second_word = "hey computer".into();
+        cfg.quick.prompt = "Knapp.".into();
+        let normal = ticket_body(&cfg, false);
+        assert_eq!(normal["prompt"], "Wohnzimmer");
+        assert!(normal.get("oneshot").is_none());
+        let q = ticket_body(&cfg, true);
+        assert_eq!(q["prompt"], "Wohnzimmer\n\nKnapp.");
+        assert_eq!(q["name"], "Hey Computer");
+        assert_eq!(q["voice"], "Puck");
+        assert_eq!(q["oneshot"], true);
+        assert_eq!(q["smart_home"], true);
+        cfg.quick.name = "Jarvis".into();
+        assert_eq!(ticket_body(&cfg, true)["name"], "Jarvis");
     }
 
     #[test]

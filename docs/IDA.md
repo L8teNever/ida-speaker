@@ -45,7 +45,7 @@ Beides schickt der Lautsprecher bei jedem Ticket mit, IDA speichert es nicht.
 
 ## Was dabei passiert
 
-1. `POST <adresse>/device/ticket` mit den Headern `x-device-name` und `x-device-key` und optional dem Body `{"prompt": …, "smart_home": true}` liefert ein Ticket, das eine Minute gilt.
+1. `POST <adresse>/device/ticket` mit den Headern `x-device-name` und `x-device-key` und optional dem Body `{"prompt": …, "smart_home": true}` liefert ein Ticket, das eine Minute gilt. Beim zweiten Namen kommen `"name"` (so heißt sie im Gespräch), `"voice"` (Gemini-Stimme) und `"oneshot": true` dazu: keine Begrüßung, ein Befehl, eine kurze Antwort, dann legt sie auf. Was nach dem Namen schon gesagt wurde, schickt der Pi direkt nach `ready` als erstes Audio.
 2. `WebSocket <adresse>/live?ticket=…&mode=speaker` öffnet das Gespräch:
    - Pi → IDA: binär PCM 16 bit LE, 16 kHz mono; Text `{"type":"end"}` zum Auflegen
    - IDA → Pi: binär PCM 16 bit LE, 24 kHz mono; Text `ready`, `text`, `tool`, `interrupted`, `end`, `error`

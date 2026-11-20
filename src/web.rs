@@ -297,7 +297,7 @@ async fn talk(State(app): S, headers: HeaderMap) -> Response {
     if matches!(app.phase(), Phase::Talking | Phase::Connecting) {
         return err(StatusCode::CONFLICT, "Gespräch läuft schon");
     }
-    let _ = app.commands.send(Command::Start("Website".into()));
+    let _ = app.commands.send(Command::start("Website"));
     Json(json!({ "ok": true })).into_response()
 }
 

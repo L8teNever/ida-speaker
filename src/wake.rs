@@ -7,13 +7,28 @@ use vosk::{CompleteResult, DecodingState, Model, Recognizer};
 
 pub struct Detector {
     rec: Option<Recognizer>,
-    words: Vec<String>,
+    /// [Hauptwort, zweiter Name] – leere Phrase = aus
+    phrases: Vec<Vec<String>>,
     min_conf: f32,
     /// Wörter der Phrase, die das Modell nicht kennt (die Website zeigt sie an).
     pub unknown: Vec<String>,
     /// Zuletzt gehörter Text (für „Jetzt sagen“ auf der Website).
     pub heard: String,
+    /// Was der Erkennung zuletzt gegeben wurde (für den Befehl direkt nach dem Namen) und wie viel seit dem Zurücksetzen.
+    fed: std::collections::VecDeque<i16>,
+    fed_total: u64,
 }
+
+/// Erkanntes Wake-Word: welches (0 = Hauptname, 1 = zweiter Name) und was danach schon gesagt wurde.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hit {
+    pub which: usize,
+    /// Audio direkt nach dem Namen („Computer, Licht an“ in einem Atemzug), 16 kHz.
+    pub after: Vec<i16>,
+}
+
+/// So viel Audio hebt der Detektor auf (8 s).
+const KEEP: usize = 8 * crate::dsp::RATE as usize;
 
 /// Sucht das Sprachmodell: zuerst ein eigenes in `/data/model`, sonst das im Image.
 pub fn model_path(data: &Path) -> Option<PathBuf> {
@@ -38,19 +53,27 @@ pub fn load_model(data: &Path) -> Option<Model> {
 
 impl Detector {
     pub fn new(model: Option<&mut Model>, cfg: &Wake) -> Self {
-        let words = cfg.words();
+        let phrases = vec![
+            cfg.words(),
+            crate::config::normalize_phrase(&cfg.second_word),
+        ];
+        let all: Vec<String> = phrases.iter().flatten().cloned().collect();
         let mut unknown = Vec::new();
         let rec = match model {
-            Some(model) if !words.is_empty() => {
-                for w in &words {
-                    if model.find_word(w).is_none() {
+            Some(model) if !phrases[0].is_empty() => {
+                for w in &all {
+                    if model.find_word(w).is_none() && !unknown.contains(w) {
                         unknown.push(w.clone());
                     }
                 }
                 // Lockwörter: ähnlich klingende und häufige Wörter fangen ab, was sonst als Wake-Word durchginge
-                let mut grammar = vec![words.join(" ")];
+                let mut grammar: Vec<String> = phrases
+                    .iter()
+                    .filter(|p| !p.is_empty())
+                    .map(|p| p.join(" "))
+                    .collect();
                 grammar.extend(
-                    decoys(&words)
+                    decoys(&all)
                         .into_iter()
                         .filter(|d| model.find_word(d).is_some()),
                 );
@@ -65,10 +88,12 @@ impl Detector {
         };
         Self {
             rec,
-            words,
+            phrases,
             min_conf: cfg.min_conf(),
             unknown,
             heard: String::new(),
+            fed: std::collections::VecDeque::with_capacity(KEEP),
+            fed_total: 0,
         }
     }
 
@@ -76,48 +101,69 @@ impl Detector {
         self.rec.is_some()
     }
 
-    /// Nimmt 16-kHz-Audio und meldet `true`, sobald das Wake-Word sicher erkannt ist.
-    pub fn feed(&mut self, pcm: &[i16]) -> bool {
-        let Some(rec) = self.rec.as_mut() else {
-            return false;
-        };
-        match rec.accept_waveform(pcm) {
-            Ok(DecodingState::Finalized) => {
-                let found: Vec<(String, f32)> = match rec.result() {
-                    CompleteResult::Single(r) => r
-                        .result
-                        .iter()
-                        .map(|w| (w.word.to_string(), w.conf))
-                        .collect(),
-                    CompleteResult::Multiple(m) => m
-                        .alternatives
-                        .first()
-                        .map(|a| {
-                            a.result
-                                .iter()
-                                .map(|w| (w.word.to_string(), a.confidence))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                };
-                let text: Vec<&str> = found
-                    .iter()
-                    .map(|(w, _)| w.as_str())
-                    .filter(|w| *w != "[unk]")
-                    .collect();
-                if !text.is_empty() {
-                    self.heard = text.join(" ");
-                }
-                matches(&found, &self.words, self.min_conf)
-            }
-            _ => false,
+    /// Nimmt 16-kHz-Audio und meldet, sobald ein Wake-Word sicher erkannt ist.
+    pub fn feed(&mut self, pcm: &[i16]) -> Option<Hit> {
+        let rec = self.rec.as_mut()?;
+        self.fed.extend(pcm.iter().copied());
+        while self.fed.len() > KEEP {
+            self.fed.pop_front();
         }
+        self.fed_total += pcm.len() as u64;
+        let Ok(DecodingState::Finalized) = rec.accept_waveform(pcm) else {
+            return None;
+        };
+        let found: Vec<(String, f32, f32)> = match rec.result() {
+            CompleteResult::Single(r) => r
+                .result
+                .iter()
+                .map(|w| (w.word.to_string(), w.conf, w.end))
+                .collect(),
+            CompleteResult::Multiple(m) => m
+                .alternatives
+                .first()
+                .map(|a| {
+                    a.result
+                        .iter()
+                        .map(|w| (w.word.to_string(), a.confidence, w.end))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let text: Vec<&str> = found
+            .iter()
+            .map(|(w, _, _)| w.as_str())
+            .filter(|w| *w != "[unk]")
+            .collect();
+        if !text.is_empty() {
+            self.heard = text.join(" ");
+        }
+        let words: Vec<(String, f32)> = found.iter().map(|(w, c, _)| (w.clone(), *c)).collect();
+        for (which, phrase) in self.phrases.iter().enumerate() {
+            if let Some(last) = find(&words, phrase, self.min_conf) {
+                let end = found[last].2;
+                return Some(Hit {
+                    which,
+                    after: self.after(end),
+                });
+            }
+        }
+        None
+    }
+
+    /// Audio ab Sekunde `end` (Zeit der Erkennung seit dem Zurücksetzen) bis jetzt.
+    fn after(&self, end: f32) -> Vec<i16> {
+        let start = (end.max(0.0) * crate::dsp::RATE as f32) as u64;
+        let ring_start = self.fed_total - self.fed.len() as u64;
+        let from = start.saturating_sub(ring_start) as usize;
+        self.fed.iter().skip(from).copied().collect()
     }
 
     pub fn reset(&mut self) {
         if let Some(r) = self.rec.as_mut() {
             r.reset();
         }
+        self.fed.clear();
+        self.fed_total = 0;
     }
 }
 
@@ -160,16 +206,25 @@ pub fn decoys(phrase: &[String]) -> Vec<String> {
     out
 }
 
-/// Kommt die Phrase in den erkannten Wörtern vor, jedes Wort mit mindestens `min_conf`?
-pub fn matches(found: &[(String, f32)], phrase: &[String], min_conf: f32) -> bool {
+/// Wie `matches`, gibt aber die Position des letzten Worts der Phrase zurück.
+pub fn find(found: &[(String, f32)], phrase: &[String], min_conf: f32) -> Option<usize> {
     if phrase.is_empty() || found.len() < phrase.len() {
-        return false;
+        return None;
     }
-    found.windows(phrase.len()).any(|win| {
-        win.iter()
-            .zip(phrase)
-            .all(|((w, c), p)| w == p && *c >= min_conf)
-    })
+    found
+        .windows(phrase.len())
+        .position(|win| {
+            win.iter()
+                .zip(phrase)
+                .all(|((w, c), p)| w == p && *c >= min_conf)
+        })
+        .map(|i| i + phrase.len() - 1)
+}
+
+/// Kommt die Phrase in den erkannten Wörtern vor, jedes Wort mit mindestens `min_conf`?
+#[cfg(test)]
+pub fn matches(found: &[(String, f32)], phrase: &[String], min_conf: f32) -> bool {
+    find(found, phrase, min_conf).is_some()
 }
 
 #[cfg(test)]
@@ -188,6 +243,35 @@ mod tests {
         assert!(!matches(&f(&[("stella", 0.5)]), &p, 0.65));
         assert!(!matches(&f(&[("[unk]", 1.0)]), &p, 0.65));
         assert!(!matches(&[], &p, 0.65));
+    }
+
+    #[test]
+    fn find_returns_last_word() {
+        let p = vec!["hey".to_string(), "computer".to_string()];
+        let w = f(&[
+            ("[unk]", 1.0),
+            ("hey", 0.9),
+            ("computer", 0.9),
+            ("[unk]", 0.5),
+        ]);
+        assert_eq!(find(&w, &p, 0.65), Some(2));
+        assert_eq!(find(&w, &[], 0.65), None);
+    }
+
+    #[test]
+    fn audio_after_the_name() {
+        let mut d = Detector::new(None, &Wake::default());
+        // ohne Modell nimmt feed nichts an – Puffer direkt füllen wie feed es täte
+        let total = KEEP + crate::dsp::RATE as usize; // 9 s, die erste Sekunde fällt raus
+        d.fed.extend((0..KEEP).map(|i| (i % 1000) as i16));
+        d.fed_total = total as u64;
+        // Name endet bei 8,5 s → die letzte halbe Sekunde
+        let after = d.after(8.5);
+        assert_eq!(after.len(), crate::dsp::RATE as usize / 2);
+        // Name lag vor dem Puffer → alles
+        assert_eq!(d.after(0.2).len(), KEEP);
+        // Name ganz am Ende → nichts
+        assert!(d.after(9.0).is_empty());
     }
 
     #[test]
@@ -259,7 +343,7 @@ mod tests {
         );
         let mut hits = 0;
         for chunk in pcm.chunks(800).chain(std::iter::once(&[0i16; 16000][..])) {
-            if d.feed(chunk) {
+            if d.feed(chunk).is_some() {
                 hits += 1;
                 d.reset();
             }

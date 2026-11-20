@@ -201,6 +201,7 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
     let mut gain = cfg.audio.mic_gain as f32 / 100.0;
     let mut mute_while_speaking = cfg.echo.mute_while_speaking;
     let mut wake_on = cfg.wake.enabled;
+    let mut second_word = cfg.wake.second_word.clone();
     let key = rebuild_key(&cfg);
     let mut peak = 0u32;
     let mut frames = 0u32;
@@ -219,6 +220,7 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
             gain = next.audio.mic_gain as f32 / 100.0;
             mute_while_speaking = next.echo.mute_while_speaking;
             wake_on = next.wake.enabled;
+            second_word = next.wake.second_word.clone();
             detector = Detector::new(model.as_mut(), &next.wake);
             let mut s = app.status.lock().unwrap();
             s.audio.model = detector.ready();
@@ -277,10 +279,20 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
             }
             wake_buf.extend_from_slice(&pcm);
             if wake_buf.len() >= 800 {
-                if detector.feed(&wake_buf) {
+                if let Some(hit) = detector.feed(&wake_buf) {
                     detector.reset();
                     app.status.lock().unwrap().audio.heard = detector.heard.clone();
-                    let _ = app.commands.send(Command::Start("Wake-Word".into()));
+                    let quick = hit.which == 1;
+                    let source = if quick {
+                        format!("Wake-Word „{}“", second_word)
+                    } else {
+                        "Wake-Word".into()
+                    };
+                    let _ = app.commands.send(Command::Start {
+                        source,
+                        quick,
+                        pre: if quick { hit.after } else { Vec::new() },
+                    });
                 } else if !detector.heard.is_empty() {
                     app.status.lock().unwrap().audio.heard = std::mem::take(&mut detector.heard);
                 }

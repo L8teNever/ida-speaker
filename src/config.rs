@@ -16,6 +16,7 @@ pub struct Config {
     pub wifi: Wifi,
     pub assistant: Assistant,
     pub presence: Presence,
+    pub quick: Quick,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -83,6 +84,8 @@ pub struct Wake {
     pub word: String,
     /// 0.0 = streng (wenig Fehlalarme), 1.0 = empfindlich.
     pub sensitivity: f32,
+    /// Zweiter Name für die Befehls-Persönlichkeit (leer = aus), z. B. "computer".
+    pub second_word: String,
 }
 
 impl Default for Wake {
@@ -91,6 +94,7 @@ impl Default for Wake {
             enabled: true,
             word: "stella".into(),
             sensitivity: 0.5,
+            second_word: String::new(),
         }
     }
 }
@@ -182,6 +186,34 @@ pub struct Assistant {
     pub prompt: String,
     /// Licht & Co. schaltet Stella sofort, ohne nachzufragen (Home Assistant).
     pub smart_home: bool,
+}
+
+/// Zweite Persönlichkeit hinter dem zweiten Namen: z. B. nur ein Befehl („Licht an“), Antwort, auflegen.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Quick {
+    /// So heißt sie im Gespräch (leer = wie das Wort).
+    pub name: String,
+    /// Eigene Anweisungen (Persönlichkeit, Stil) – zusätzlich zu den Anweisungen des Lautsprechers.
+    pub prompt: String,
+    /// Gemini-Stimme (leer = wie Stella), z. B. Puck, Charon, Kore, Fenrir, Aoede, Leda, Orus, Zephyr.
+    pub voice: String,
+    /// Ein Befehl, Antwort, sofort auflegen.
+    pub oneshot: bool,
+    /// Smart Home ohne Nachfrage.
+    pub smart_home: bool,
+}
+
+impl Default for Quick {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            prompt: String::new(),
+            voice: "Puck".into(),
+            oneshot: true,
+            smart_home: true,
+        }
+    }
 }
 
 /// Nur reagieren, wenn mein Handy da ist (Bluetooth-Anwesenheit).
@@ -333,6 +365,17 @@ impl Config {
         next.presence.min_rssi = next.presence.min_rssi.clamp(-100, 0);
         if next.presence.mac.is_empty() {
             next.presence.enabled = false;
+        }
+        next.wake.second_word = normalize_phrase(&next.wake.second_word).join(" ");
+        if next.wake.second_word == next.wake.word {
+            next.wake.second_word.clear();
+        }
+        next.quick.prompt = next.quick.prompt.trim().chars().take(2000).collect();
+        next.quick.name = next.quick.name.trim().chars().take(32).collect();
+        if !next.quick.voice.is_empty()
+            && !next.quick.voice.chars().all(|c| c.is_ascii_alphabetic())
+        {
+            next.quick.voice.clear();
         }
         next.ida.url = next.ida.url.trim().trim_end_matches('/').to_string();
         next.ida.device_name = next.ida.device_name.trim().to_lowercase();

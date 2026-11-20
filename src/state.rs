@@ -58,9 +58,24 @@ pub struct AudioInfo {
 
 pub enum Command {
     /// Gespräch starten (Wake-Word oder Knopf auf der Website).
-    Start(String),
+    /// `quick` = zweiter Name (Befehls-Persönlichkeit), `pre` = was nach dem Namen schon gesagt wurde (16 kHz).
+    Start {
+        source: String,
+        quick: bool,
+        pre: Vec<i16>,
+    },
     /// Laufendes Gespräch beenden.
     Stop,
+}
+
+impl Command {
+    pub fn start(source: impl Into<String>) -> Self {
+        Command::Start {
+            source: source.into(),
+            quick: false,
+            pre: Vec::new(),
+        }
+    }
 }
 
 pub struct Status {

@@ -68,6 +68,16 @@ Unter **Wake-Word → Nur wenn mein Handy da ist** koppelst du einmal dein Handy
 - Genaue Meter misst Bluetooth nicht. „Da“ heißt in Reichweite, in der Wohnung meist 5 bis 10 m. Ist die Signalstärke bekannt, kannst du mit „Mindest-Signal“ enger einstellen.
 - Bluetooth am Handy einfach anlassen. Ein Gespräch per Knopf auf der Website geht immer.
 
+## Zwei Namen
+
+Unter **Wake-Word → Zweiter Name für schnelle Befehle** trägst du ein zweites Wort ein, z. B. „Computer“. Dahinter steckt eine eigene Persönlichkeit:
+
+- **„Stella“:** das normale Gespräch, mit allem, was sie über dich weiß.
+- **„Computer, Licht an“:** in einem Atemzug gesagt. Sie begrüßt dich nicht, erledigt den Befehl, antwortet in einem Satz („Licht ist an.“) und legt sofort auf.
+- Was du direkt nach dem Namen sagst, hebt der Pi auf und schickt es gleich mit. So geht beim Verbinden kein Wort verloren.
+- Einstellbar sind der Name im Gespräch, die Stimme (z. B. Puck), eigene Anweisungen, Smart Home direkt und „Nur ein Befehl“. Schaltest du „Nur ein Befehl“ aus, ist es ein normales Gespräch mit anderem Namen und anderer Stimme.
+- Sagst du nach dem Namen nichts, legt sie nach ein paar Sekunden auf.
+
 ## Benutzen
 
 - „Stella“ sagen (oder dein Wort). Ein kurzer Ton zeigt, dass sie zuhört, und sie meldet sich.
@@ -79,7 +89,7 @@ Unter **Wake-Word → Nur wenn mein Handy da ist** koppelst du einmal dein Handy
 
 | Bereich | Was |
 |---|---|
-| Wake-Word | Wort oder Phrase, Empfindlichkeit, an/aus, „Zuletzt gehört“ zum Testen |
+| Wake-Word | Wort oder Phrase, Empfindlichkeit, an/aus, „Zuletzt gehört“ zum Testen, **zweiter Name** für schnelle Befehle |
 | Audio | Geräte, Lautstärke, Mikrofon-Verstärkung, Signaltöne, Testton, Pegelanzeige, **Bluetooth-Box** suchen, koppeln, verbinden |
 | Echo-Filter | Echo-Unterdrückung, Rauschunterdrückung, automatische Lautstärke, Notfall-Modus (Mikrofon stumm, solange Stella spricht) |
 | Gespräch | Auflegen nach Stille, Höchstdauer, Sprach-Schwelle |

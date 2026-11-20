@@ -195,7 +195,7 @@ function renderLive() {
   const st = $("#stats");
   if (st) st.innerHTML = [
     ["Status", PHASE[S.phase], S.phase === "error" ? "bad" : S.phase === "muted" ? "warn" : "good"],
-    ["Wake-Word", a.model ? `„${c.wake.word}“` : "kein Modell", a.model && !a.unknown_words.length ? "good" : "warn"],
+    ["Wake-Word", a.model ? `„${c.wake.word}“${c.wake.second_word ? ` und „${c.wake.second_word}“` : ""}` : "kein Modell", a.model && !a.unknown_words.length ? "good" : "warn"],
     ["Echo-Filter", a.echo_filter ? "an" : "aus", a.echo_filter ? "good" : "warn"],
     ...(c.presence.enabled ? [["Handy", S.presence?.present ? "da" : "weg", S.presence?.present ? "good" : "warn"]] : []),
     ["Cloudflare", !c.cloudflare.enabled ? "aus" : w.connected ? "verbunden" : "nicht verbunden", !c.cloudflare.enabled ? "" : w.connected ? "good" : "bad"],
@@ -284,6 +284,17 @@ function wakeTab() {
     <p class="hint" style="margin:4px 0 0">Höher = reagiert leichter, aber öfter aus Versehen.</p>
     <label>Mikrofon-Pegel</label><div class="meter"><i></i></div>
     <label>Zuletzt gehört</label><div id="heard" class="sub">–</div>
+    ${saveRow()}</div>
+  <div class="card"><h2>Zweiter Name für schnelle Befehle</h2>
+    <p class="hint">Ein zweites Wort, z. B. „Computer“. Darauf antwortet eine eigene Persönlichkeit: Du sagst „Computer, Licht an“ in einem Atemzug, sie schaltet, antwortet in einem Satz und legt sofort auf. Beim normalen Namen bleibt alles wie gewohnt. Leer lassen = aus.</p>
+    ${field("wake.second_word", "Zweites Wort")}
+    ${field("quick.name", "So heißt sie im Gespräch", "text", "Leer = wie das Wort.")}
+    <label>Stimme</label><select data-k="quick.voice"><option value="">wie Stella</option>${["Puck", "Charon", "Kore", "Fenrir", "Aoede", "Leda", "Orus", "Zephyr"].map(v => `<option value="${v}" ${S.config.quick.voice === v ? "selected" : ""}>${v}</option>`).join("")}</select>
+    ${toggle("quick.oneshot", "Nur ein Befehl", "Nach der Antwort sofort auflegen. Aus = normales Gespräch, nur mit anderem Namen und anderer Stimme")}
+    ${toggle("quick.smart_home", "Smart Home direkt", "„Licht aus“ schaltet sofort, ohne Nachfrage")}
+    <label>Eigene Anweisungen</label>
+    <textarea data-k="quick.prompt" rows="4" maxlength="2000" placeholder="z. B. Sei knapp und sachlich wie ein Bordcomputer.">${esc(cfgVal("quick.prompt"))}</textarea>
+    <p class="hint" style="margin:4px 0 0">Kommt zusätzlich zu den Anweisungen für diesen Lautsprecher.</p>
     ${saveRow()}</div>
   ${presenceCard()}`;
 }
