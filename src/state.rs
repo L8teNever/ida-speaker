@@ -111,6 +111,31 @@ pub struct App {
     pub mic: Mutex<Option<mpsc::Sender<Vec<i16>>>>,
     /// Was der Lautsprecher abspielen soll (mono, Geräterate).
     pub playback: Mutex<Playback>,
+    /// Laufende Aufnahme für „Namen einsprechen“.
+    pub learn: Mutex<Option<Learn>>,
+    /// Laufende Messung der Lautsprecher-Verzögerung.
+    pub calib: Mutex<Option<Calib>>,
+}
+
+/// Kalibrierung: der Audio-Thread zählt 10-ms-Blöcke vom Messton im Referenzsignal bis zu ihm im Mikrofon.
+#[derive(Default)]
+pub struct Calib {
+    /// Gezählte Mikrofon-Blöcke seit Beginn.
+    pub frame: u64,
+    /// Block, in dem der Ton an den Lautsprecher ging bzw. im Mikrofon ankam.
+    pub ref_at: Option<u64>,
+    pub mic_at: Option<u64>,
+    /// Grundrauschen vor dem Ton (RMS).
+    pub noise: f32,
+    /// Ergebnis: Blöcke zwischen Lautsprecher und Mikrofon (`None` = nichts gehört).
+    pub done: Option<tokio::sync::oneshot::Sender<Option<i64>>>,
+}
+
+/// Aufnahme für „Namen einsprechen“: der Audio-Thread sammelt `need` Samples (16 kHz) und schickt zurück, was Vosk hört.
+pub struct Learn {
+    pub buf: Vec<i16>,
+    pub need: usize,
+    pub done: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
 #[derive(Default)]
@@ -119,6 +144,8 @@ pub struct Playback {
     pub rate: u32,
     /// Sekunden seit Epoche, bis zu denen „Stella spricht“ gilt (für Notfall-Modus und Stille-Erkennung).
     pub busy_until_ms: u64,
+    /// So lange braucht der Ton nach der Warteschlange noch bis aus dem Lautsprecher (Puffer + Funk).
+    pub latency_ms: u64,
 }
 
 pub fn now_s() -> u64 {
@@ -165,6 +192,8 @@ impl App {
             talking: AtomicBool::new(false),
             mic: Mutex::new(None),
             playback: Mutex::new(Playback::default()),
+            learn: Mutex::new(None),
+            calib: Mutex::new(None),
         })
     }
 
@@ -223,7 +252,7 @@ impl App {
         let mut p = self.playback.lock().unwrap();
         p.queue.extend(samples.iter().copied());
         let rate = p.rate.max(1) as u64;
-        p.busy_until_ms = now_ms() + p.queue.len() as u64 * 1000 / rate + 300;
+        p.busy_until_ms = now_ms() + p.queue.len() as u64 * 1000 / rate + p.latency_ms + 300;
     }
 
     pub fn clear_playback(&self) {

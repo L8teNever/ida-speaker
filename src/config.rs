@@ -60,6 +60,10 @@ pub struct Audio {
     /// Gewählter Bluetooth-Lautsprecher (MAC) und sein Name; Ausgabe läuft dann über `alsa:ida_bluetooth`.
     pub bluetooth: String,
     pub bluetooth_name: String,
+    /// Eigener Puffer zum Lautsprecher; aus = das Gerät entscheidet (bei bluez-alsa oft Sekunden Verzögerung).
+    pub buffer: bool,
+    /// Größe dieses Puffers in Millisekunden (20–2000).
+    pub buffer_ms: u32,
 }
 
 impl Default for Audio {
@@ -72,6 +76,8 @@ impl Default for Audio {
             tones: true,
             bluetooth: String::new(),
             bluetooth_name: String::new(),
+            buffer: true,
+            buffer_ms: 100,
         }
     }
 }
@@ -86,6 +92,10 @@ pub struct Wake {
     pub sensitivity: f32,
     /// Zweiter Name für die Befehls-Persönlichkeit (leer = aus), z. B. "computer".
     pub second_word: String,
+    /// Weitere Aussprachen des Namens, wie das Modell sie hört (kommagetrennt), z. B. "stela, stellar".
+    pub alias: String,
+    /// Dasselbe für den zweiten Namen.
+    pub second_alias: String,
 }
 
 impl Default for Wake {
@@ -95,6 +105,8 @@ impl Default for Wake {
             word: "stella".into(),
             sensitivity: 0.5,
             second_word: String::new(),
+            alias: String::new(),
+            second_alias: String::new(),
         }
     }
 }
@@ -109,7 +121,45 @@ impl Wake {
     pub fn words(&self) -> Vec<String> {
         normalize_phrase(&self.word)
     }
+
+    /// Alle Phrasen, auf die er hört: (0 = Hauptname, 1 = zweiter Name, Phrase) – erst die Namen, dann die Aussprachen.
+    pub fn phrases(&self) -> Vec<(usize, Vec<String>)> {
+        let mut out = vec![(0, self.words())];
+        let second = normalize_phrase(&self.second_word);
+        let has_second = !second.is_empty();
+        out.push((1, second));
+        out.extend(split_aliases(&self.alias).into_iter().map(|p| (0, p)));
+        if has_second {
+            out.extend(
+                split_aliases(&self.second_alias)
+                    .into_iter()
+                    .map(|p| (1, p)),
+            );
+        }
+        out
+    }
 }
+
+/// Kommagetrennte Aussprachen → Phrasen (ohne leere und doppelte, höchstens 10).
+pub fn split_aliases(s: &str) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for p in s.split(',').map(normalize_phrase) {
+        if !p.is_empty() && !out.contains(&p) && out.len() < 10 {
+            out.push(p);
+        }
+    }
+    out
+}
+
+pub fn join_aliases(list: &[Vec<String>]) -> String {
+    list.iter()
+        .map(|p| p.join(" "))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Größte Lautsprecher-Verzögerung (auch ohne eigenen Puffer, dann sind es mitunter Sekunden).
+pub const MAX_DELAY_MS: u32 = 6000;
 
 pub fn normalize_phrase(s: &str) -> Vec<String> {
     s.split_whitespace()
@@ -143,6 +193,8 @@ pub struct Echo {
     pub agc: bool,
     /// Notfall-Modus für schwierige Räume: Mikrofon stumm, solange Stella spricht (dann kein Unterbrechen).
     pub mute_while_speaking: bool,
+    /// So viel später kommt der Ton wirklich aus dem Lautsprecher (Bluetooth: oft 150–300 ms), 0–6000 ms.
+    pub delay_ms: u32,
 }
 
 impl Default for Echo {
@@ -152,6 +204,7 @@ impl Default for Echo {
             noise: Level::Moderate,
             agc: true,
             mute_while_speaking: false,
+            delay_ms: 0,
         }
     }
 }
@@ -385,11 +438,15 @@ impl Config {
         next.cloudflare.client_secret = next.cloudflare.client_secret.trim().to_string();
         next.audio.volume = next.audio.volume.min(200);
         next.audio.mic_gain = next.audio.mic_gain.min(400);
+        next.audio.buffer_ms = next.audio.buffer_ms.clamp(20, 2000);
         next.wake.sensitivity = next.wake.sensitivity.clamp(0.0, 1.0);
         next.wake.word = normalize_phrase(&next.wake.word).join(" ");
         if next.wake.word.is_empty() {
             next.wake.word = self.wake.word.clone();
         }
+        next.wake.alias = join_aliases(&split_aliases(&next.wake.alias));
+        next.wake.second_alias = join_aliases(&split_aliases(&next.wake.second_alias));
+        next.echo.delay_ms = next.echo.delay_ms.min(MAX_DELAY_MS);
         next.call.silence_end_s = next.call.silence_end_s.clamp(3, 120);
         next.call.max_minutes = next.call.max_minutes.clamp(1, 120);
         Ok(next)

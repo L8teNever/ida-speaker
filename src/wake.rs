@@ -7,8 +7,8 @@ use vosk::{CompleteResult, DecodingState, Model, Recognizer};
 
 pub struct Detector {
     rec: Option<Recognizer>,
-    /// [Hauptwort, zweiter Name] – leere Phrase = aus
-    phrases: Vec<Vec<String>>,
+    /// (0 = Hauptname / 1 = zweiter Name, Phrase) – leere Phrase = aus
+    phrases: Vec<(usize, Vec<String>)>,
     min_conf: f32,
     /// Wörter der Phrase, die das Modell nicht kennt (die Website zeigt sie an).
     pub unknown: Vec<String>,
@@ -53,15 +53,14 @@ pub fn load_model(data: &Path) -> Option<Model> {
 
 impl Detector {
     pub fn new(model: Option<&mut Model>, cfg: &Wake) -> Self {
-        let phrases = vec![
-            cfg.words(),
-            crate::config::normalize_phrase(&cfg.second_word),
-        ];
-        let all: Vec<String> = phrases.iter().flatten().cloned().collect();
+        let phrases = cfg.phrases();
+        let all: Vec<String> = phrases.iter().flat_map(|(_, p)| p).cloned().collect();
+        // Nur die eingestellten Namen melden, Aussprachen kommen ja aus dem Modell
+        let named: Vec<String> = phrases[..2].iter().flat_map(|(_, p)| p).cloned().collect();
         let mut unknown = Vec::new();
         let rec = match model {
-            Some(model) if !phrases[0].is_empty() => {
-                for w in &all {
+            Some(model) if !phrases[0].1.is_empty() => {
+                for w in &named {
                     if model.find_word(w).is_none() && !unknown.contains(w) {
                         unknown.push(w.clone());
                     }
@@ -69,9 +68,10 @@ impl Detector {
                 // Lockwörter: ähnlich klingende und häufige Wörter fangen ab, was sonst als Wake-Word durchginge
                 let mut grammar: Vec<String> = phrases
                     .iter()
-                    .filter(|p| !p.is_empty())
-                    .map(|p| p.join(" "))
+                    .filter(|(_, p)| !p.is_empty())
+                    .map(|(_, p)| p.join(" "))
                     .collect();
+                grammar.dedup();
                 grammar.extend(
                     decoys(&all)
                         .into_iter()
@@ -138,11 +138,11 @@ impl Detector {
             self.heard = text.join(" ");
         }
         let words: Vec<(String, f32)> = found.iter().map(|(w, c, _)| (w.clone(), *c)).collect();
-        for (which, phrase) in self.phrases.iter().enumerate() {
+        for (which, phrase) in &self.phrases {
             if let Some(last) = find(&words, phrase, self.min_conf) {
                 let end = found[last].2;
                 return Some(Hit {
-                    which,
+                    which: *which,
                     after: self.after(end),
                 });
             }
@@ -165,6 +165,35 @@ impl Detector {
         self.fed.clear();
         self.fed_total = 0;
     }
+}
+
+/// Freie Erkennung ohne Grammatik: was das Modell in einer Aufnahme hört (für „Namen einsprechen“).
+pub fn transcribe(model: &Model, pcm: &[i16]) -> String {
+    let Some(mut rec) = Recognizer::new(model, crate::dsp::RATE as f32) else {
+        return String::new();
+    };
+    let mut text = Vec::new();
+    for chunk in pcm.chunks(1600) {
+        if let Ok(DecodingState::Finalized) = rec.accept_waveform(chunk)
+            && let CompleteResult::Single(r) = rec.result()
+        {
+            text.push(r.text.to_string());
+        }
+    }
+    if let CompleteResult::Single(r) = rec.final_result() {
+        text.push(r.text.to_string());
+    }
+    text.join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Taugt eine gehörte Phrase als weitere Aussprache? Nicht leer, nicht zu kurz, kein Allerweltswort.
+pub fn usable_alias(p: &[String]) -> bool {
+    !p.is_empty()
+        && p.iter().map(|w| w.chars().count()).sum::<usize>() >= 3
+        && !(p.len() == 1 && COMMON.contains(&p[0].as_str()))
 }
 
 /// Häufige kurze Wörter, die mit dem Wake-Word konkurrieren (nur die, die das Modell kennt, landen in der Grammatik).
@@ -285,6 +314,25 @@ mod tests {
         let p = vec!["hey".to_string(), "stella".to_string()];
         assert!(!decoys(&p).contains(&"hey".to_string()));
         assert!(!decoys(&["ok".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn aliases_count_as_the_name() {
+        let w = Wake {
+            word: "stella".into(),
+            second_word: "computer".into(),
+            alias: "Stela, stellar, stela".into(),
+            second_alias: "kompjuter".into(),
+            ..Default::default()
+        };
+        let p = w.phrases();
+        assert_eq!(p.len(), 5);
+        assert!(p.contains(&(0, vec!["stela".to_string()])));
+        assert!(p.contains(&(1, vec!["kompjuter".to_string()])));
+        assert!(usable_alias(&["stela".to_string()]));
+        assert!(!usable_alias(&["ja".to_string()]));
+        assert!(!usable_alias(&["die".to_string()]));
+        assert!(!usable_alias(&[]));
     }
 
     #[test]

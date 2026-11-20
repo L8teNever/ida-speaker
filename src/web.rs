@@ -37,6 +37,12 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/config", post(config))
         .route("/api/test/ida", post(test_ida))
         .route("/api/test/tone", post(test_tone))
+        .route("/api/calibrate", post(calibrate))
+        .route("/api/wake/learn", post(|s: S, h: HeaderMap| learn(s, h, 0)))
+        .route(
+            "/api/wake/learn/second",
+            post(|s: S, h: HeaderMap| learn(s, h, 1)),
+        )
         .route("/api/talk", post(talk))
         .route("/api/stop", post(stop))
         .route("/api/mute", post(mute))
@@ -288,6 +294,156 @@ async fn test_tone(State(app): S, headers: HeaderMap) -> Response {
     }
     audio::beep(&app, Beep::Test);
     Json(json!({ "ok": true })).into_response()
+}
+
+/// Misst mit drei Messtönen, wie viel später der Ton wirklich aus dem Lautsprecher kommt, und stellt den Echo-Filter darauf ein.
+async fn calibrate(State(app): S, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    if app.talking.load(Ordering::Relaxed) {
+        return err(StatusCode::CONFLICT, "Gerade läuft ein Gespräch");
+    }
+    if app.calib.lock().unwrap().is_some() {
+        return err(StatusCode::CONFLICT, "Kalibriert gerade schon");
+    }
+    let mut cfg = app.cfg();
+    if cfg.audio.volume == 0 {
+        return Json(
+            json!({ "ok": false, "message": "Lautstärke steht auf 0 – erst lauter stellen." }),
+        )
+        .into_response();
+    }
+    let mut found: Vec<i64> = Vec::new();
+    for _ in 0..3 {
+        // Warten, bis nichts mehr spielt, damit nur der Messton zählt
+        for _ in 0..100 {
+            if !app.playing() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *app.calib.lock().unwrap() = Some(crate::state::Calib {
+            done: Some(tx),
+            ..Default::default()
+        });
+        // Erst kurz Grundrauschen messen
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        audio::beep(&app, Beep::Calibrate);
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(Some(blocks))) => found.push(blocks * 10),
+            Ok(Ok(None)) => {}
+            _ => *app.calib.lock().unwrap() = None,
+        }
+    }
+    if found.is_empty() {
+        return Json(json!({ "ok": false, "message": "Den Messton nicht im Mikrofon gehört – lauter stellen oder das Mikrofon näher an die Box." })).into_response();
+    }
+    found.sort();
+    let median = found[found.len() / 2];
+    let ms = median.clamp(0, i64::from(crate::config::MAX_DELAY_MS)) as u32;
+    let all = found
+        .iter()
+        .map(|v| format!("{v} ms"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    cfg.echo.delay_ms = ms;
+    let buffer_hint = if ms > 1000 {
+        " Das ist viel – mit „Eigener Puffer“ unter Audio wird es deutlich weniger."
+    } else {
+        ""
+    };
+    if let Err(e) = app.save_config(cfg) {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Speichern fehlgeschlagen: {e}"),
+        );
+    }
+    app.log(format!(
+        "Kalibriert: Lautsprecher-Verzögerung {ms} ms ({all})"
+    ));
+    Json(json!({ "ok": true, "message": format!("Gemessen: {ms} ms ({all}) – ist eingestellt.{buffer_hint}") })).into_response()
+}
+
+/// „Namen einsprechen“: Signalton, 2,5 s aufnehmen, frei erkennen – das Gehörte zählt danach auch als Name.
+async fn learn(State(app): S, headers: HeaderMap, which: usize) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    if app.talking.load(Ordering::Relaxed) {
+        return err(StatusCode::CONFLICT, "Gerade läuft ein Gespräch");
+    }
+    let cfg = app.cfg();
+    let name = if which == 0 {
+        cfg.wake.word.clone()
+    } else {
+        cfg.wake.second_word.clone()
+    };
+    if name.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "Erst einen Namen eintragen");
+    }
+    if !app.status.lock().unwrap().audio.model {
+        return err(StatusCode::CONFLICT, "Kein Sprachmodell geladen");
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut l = app.learn.lock().unwrap();
+        if l.is_some() {
+            return err(StatusCode::CONFLICT, "Nimmt gerade schon auf");
+        }
+        *l = Some(crate::state::Learn {
+            buf: Vec::new(),
+            need: crate::dsp::RATE as usize * 5 / 2,
+            done: Some(tx),
+        });
+    }
+    audio::beep(&app, Beep::Listen);
+    let heard = match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(t)) => t,
+        _ => {
+            *app.learn.lock().unwrap() = None;
+            return Json(json!({ "ok": false, "message": "Aufnahme hat nicht geklappt – läuft das Mikrofon?" })).into_response();
+        }
+    };
+    let phrase = crate::config::normalize_phrase(&heard);
+    let target = crate::config::normalize_phrase(&name);
+    if phrase.is_empty() {
+        return Json(json!({ "ok": false, "message": "Nichts verstanden – nach dem Ton gleich den Namen sagen, etwas lauter." })).into_response();
+    }
+    let shown = phrase.join(" ");
+    if phrase == target {
+        return Json(json!({ "ok": true, "message": format!("Gehört: „{shown}“ – passt, das erkennt er schon.") })).into_response();
+    }
+    if !crate::wake::usable_alias(&phrase) {
+        return Json(json!({ "ok": false, "message": format!("Gehört: „{shown}“ – zu allgemein, das würde ständig auslösen. Nochmal versuchen.") })).into_response();
+    }
+    let mut next = cfg;
+    let field = if which == 0 {
+        &mut next.wake.alias
+    } else {
+        &mut next.wake.second_alias
+    };
+    let mut list = crate::config::split_aliases(field);
+    if list.contains(&phrase) {
+        return Json(json!({ "ok": true, "message": format!("Gehört: „{shown}“ – steht schon in der Liste.") })).into_response();
+    }
+    if list.len() >= 10 {
+        return Json(
+            json!({ "ok": false, "message": "Schon 10 Aussprachen – lösch erst welche." }),
+        )
+        .into_response();
+    }
+    list.push(phrase);
+    *field = crate::config::join_aliases(&list);
+    if let Err(e) = app.save_config(next) {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Speichern fehlgeschlagen: {e}"),
+        );
+    }
+    app.log(format!("Neue Aussprache für „{name}“: „{shown}“"));
+    Json(json!({ "ok": true, "message": format!("Gehört: „{shown}“ – zählt jetzt auch als „{name}“.") })).into_response()
 }
 
 async fn talk(State(app): S, headers: HeaderMap) -> Response {

@@ -144,7 +144,7 @@ const toggle = (path, label, small = "") =>
   `<label class="sw"><span>${label}${small ? `<small>${small}</small>` : ""}</span><input type="checkbox" data-k="${path}" ${cfgVal(path) ? "checked" : ""}></label>`;
 const range = (path, label, min, max, step, fmt) =>
   `<label>${label}: <b data-show="${path}">${fmt(cfgVal(path))}</b></label><input type="range" data-k="${path}" min="${min}" max="${max}" step="${step}" value="${cfgVal(path)}" data-fmt="${fmt.name}">`;
-const fmts = { pct: v => Math.round(v) + " %", sens: v => Math.round(v * 100) + " %", sec: v => v + " s", min: v => v + " min", raw: v => v };
+const fmts = { pct: v => Math.round(v) + " %", sens: v => Math.round(v * 100) + " %", sec: v => v + " s", min: v => v + " min", ms: v => v + " ms", raw: v => v };
 
 function collect(root) {
   const patch = {};
@@ -172,6 +172,11 @@ async function action(btn, path, body = {}) {
   try { const r = await api(path, body); if (out && r.message) out.innerHTML = `<div class="msg ${r.ok === false ? "bad" : "ok"}">${esc(r.message)}</div>`; }
   catch (e) { if (out) out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
   btn.disabled = false; await refresh(); renderLive();
+  // „Namen einsprechen“ trägt neue Aussprachen ein – Feld nachziehen
+  if (card) card.querySelectorAll('input[data-k$="alias"]').forEach(i => i.value = cfgVal(i.dataset.k) ?? "");
+  // Kalibrieren stellt die Verzögerung ein – Regler nachziehen
+  const d = card && $('input[data-k="echo.delay_ms"]', card);
+  if (d) { d.value = cfgVal("echo.delay_ms"); const s = $('[data-show="echo.delay_ms"]', card); if (s) s.textContent = fmts.ms(d.value); }
 }
 const saveRow = (extra = "") => `<div class="row"><button class="btn primary" data-save>Speichern</button>${extra}</div><div class="out"></div>`;
 
@@ -259,6 +264,9 @@ function audioTab() {
     <label>Lautsprecher</label><select data-k="audio.output">${opt(devices?.outputs, c.audio.output)}</select>
     ${range("audio.volume", "Lautstärke", 0, 200, 5, fmts.pct)}
     ${range("audio.mic_gain", "Mikrofon-Verstärkung", 0, 400, 10, fmts.pct)}
+    ${toggle("audio.buffer", "Eigener Puffer", "Aus: das Gerät wählt selbst – bei Bluetooth oft mehrere Sekunden Verzögerung")}
+    ${range("audio.buffer_ms", "Puffer", 20, 1000, 10, fmts.ms)}
+    <p class="hint">Kleiner = Ton kommt schneller. Knackst oder stockt es, größer stellen.</p>
     <label>Mikrofon-Pegel</label><div class="meter"><i></i></div>
     ${toggle("audio.tones", "Signaltöne", "Ton beim Zuhören und am Ende des Gesprächs")}
     ${saveRow(`<button class="btn" data-act="/api/test/tone">Testton</button>`)}</div>
@@ -269,7 +277,9 @@ function audioTab() {
     <label>Rauschunterdrückung</label><select data-k="echo.noise">${["off", "low", "moderate", "high"].map(v => `<option value="${v}" ${c.echo.noise === v ? "selected" : ""}>${{ off: "aus", low: "leicht", moderate: "mittel", high: "stark" }[v]}</option>`).join("")}</select>
     ${toggle("echo.agc", "Automatische Mikrofon-Lautstärke")}
     ${toggle("echo.mute_while_speaking", "Notfall-Modus", "Mikrofon stumm, solange Stella spricht – dann kein Unterbrechen")}
-    ${saveRow()}</div>
+    ${range("echo.delay_ms", "Verzögerung des Lautsprechers", 0, 3000, 10, fmts.ms)}
+    <p class="hint" style="margin:4px 0 0">Bluetooth-Boxen spielen später ab. „Kalibrieren“ spielt drei Messtöne, misst die Zeit bis ins Mikrofon und stellt sie ein – nach jeder Änderung am Puffer oder an der Box nochmal. Dabei ruhig sein.</p>
+    ${saveRow(`<button class="btn" data-act="/api/calibrate">Kalibrieren</button>`)}</div>
   <div class="card"><h2>Gespräch</h2>
     ${range("call.silence_end_s", "Auflegen nach Stille", 3, 60, 1, fmts.sec)}
     ${range("call.max_minutes", "Höchstens", 1, 60, 1, fmts.min)}
@@ -288,10 +298,12 @@ function wakeTab() {
     <p class="hint" style="margin:4px 0 0">Höher = reagiert leichter, aber öfter aus Versehen.</p>
     <label>Mikrofon-Pegel</label><div class="meter"><i></i></div>
     <label>Zuletzt gehört</label><div id="heard" class="sub">–</div>
-    ${saveRow()}</div>
+    ${field("wake.alias", "Weitere Aussprachen", "text", "Kommagetrennt. Zählen genauso wie der Name. „Namen einsprechen“ trägt hier ein, was er bei dir hört – gern mehrmals, auch mal leiser oder von weiter weg.")}
+    ${saveRow(`<button class="btn" data-act="/api/wake/learn">Namen einsprechen</button>`)}</div>
   <div class="card"><h2>Zweiter Name für schnelle Befehle</h2>
     <p class="hint">Ein zweites Wort, z. B. „Computer“. Darauf antwortet eine eigene Persönlichkeit: Du sagst „Computer, Licht an“ in einem Atemzug, sie schaltet, antwortet in einem Satz und legt sofort auf. Beim normalen Namen bleibt alles wie gewohnt. Leer lassen = aus.</p>
     ${field("wake.second_word", "Zweites Wort")}
+    ${field("wake.second_alias", "Weitere Aussprachen", "text", "Wie oben, nur für das zweite Wort.")}
     ${field("quick.name", "So heißt sie im Gespräch", "text", "Leer = wie das Wort.")}
     <label>Stimme</label><select data-k="quick.voice"><option value="">wie Stella</option>${["Puck", "Charon", "Kore", "Fenrir", "Aoede", "Leda", "Orus", "Zephyr"].map(v => `<option value="${v}" ${S.config.quick.voice === v ? "selected" : ""}>${v}</option>`).join("")}</select>
     ${toggle("quick.oneshot", "Nur ein Befehl", "Nach der Antwort sofort auflegen. Aus = normales Gespräch, nur mit anderem Namen und anderer Stimme")}
@@ -299,7 +311,7 @@ function wakeTab() {
     <label>Eigene Anweisungen</label>
     <textarea data-k="quick.prompt" rows="4" maxlength="2000" placeholder="z. B. Sei knapp und sachlich wie ein Bordcomputer.">${esc(cfgVal("quick.prompt"))}</textarea>
     <p class="hint" style="margin:4px 0 0">Kommt zusätzlich zu den Anweisungen für diesen Lautsprecher.</p>
-    ${saveRow()}</div>
+    ${saveRow(`<button class="btn" data-act="/api/wake/learn/second">Zweites Wort einsprechen</button>`)}</div>
   ${presenceCard()}`;
 }
 let btList = null, btBusy = "";

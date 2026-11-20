@@ -97,11 +97,13 @@ pub fn spawn(app: Arc<App>) {
 }
 
 /// Teile der Einstellungen, deren Änderung Streams oder Filter neu aufbaut.
-fn rebuild_key(c: &Config) -> (String, String, String, crate::config::Echo) {
+fn rebuild_key(c: &Config) -> (String, String, String, bool, u32, crate::config::Echo) {
     (
         c.audio.input.clone(),
         c.audio.output.clone(),
         c.audio.bluetooth.clone(),
+        c.audio.buffer,
+        c.audio.buffer_ms,
         c.echo.clone(),
     )
 }
@@ -130,10 +132,33 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
     let open = |dev: cpal::Device| -> anyhow::Result<(cpal::Device, u32, cpal::Stream)> {
         let c = dev.default_output_config()?;
         let rate = c.sample_rate();
+        let fmt = c.sample_format();
+        let supported = *c.buffer_size();
+        let mut sc: StreamConfig = c.into();
+        // Eigener Puffer, sonst wählt z. B. bluez-alsa Sekunden und jeder Ton kommt spät
+        if cfg.audio.buffer {
+            let frames = period_frames(rate, cfg.audio.buffer_ms, &supported);
+            sc.buffer_size = cpal::BufferSize::Fixed(frames);
+            match build_output(
+                &dev,
+                fmt,
+                sc.clone(),
+                app.clone(),
+                volume.clone(),
+                reference.clone(),
+            ) {
+                Ok(stream) => return Ok((dev, rate, stream)),
+                Err(e) => app.log(format!(
+                    "Lautsprecher: Puffer {} ms geht nicht ({e:#}) – nehme den Standard des Geräts",
+                    cfg.audio.buffer_ms
+                )),
+            }
+        }
+        sc.buffer_size = cpal::BufferSize::Default;
         let stream = build_output(
             &dev,
-            c.sample_format(),
-            c.into(),
+            fmt,
+            sc,
             app.clone(),
             volume.clone(),
             reference.clone(),
@@ -158,6 +183,12 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
         let mut p = app.playback.lock().unwrap();
         p.queue.clear();
         p.rate = out_rate;
+        let buffer = if cfg.audio.buffer {
+            cfg.audio.buffer_ms
+        } else {
+            0
+        };
+        p.latency_ms = u64::from(buffer + cfg.echo.delay_ms);
     }
 
     let (tx, rx) = mpsc::sync_channel::<Vec<f32>>(64);
@@ -196,7 +227,9 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
     let mut mic_rs = Resampler::new(in_rate, dsp::RATE);
     let mut ref_rs = Resampler::new(out_rate, dsp::RATE);
     let mut mic_buf: Vec<f32> = Vec::with_capacity(4 * FRAME);
-    let mut ref_buf: Vec<f32> = Vec::with_capacity(4 * FRAME);
+    // Referenz um die eingestellte Verzögerung später an den Echo-Filter geben, damit sie zum Echo im Mikrofon passt
+    let ref_delay = (dsp::RATE * cfg.echo.delay_ms / 1000) as usize;
+    let mut ref_buf: Vec<f32> = vec![0.0; ref_delay];
     let mut wake_buf: Vec<i16> = Vec::with_capacity(1600);
     let mut gain = cfg.audio.mic_gain as f32 / 100.0;
     let mut mute_while_speaking = cfg.echo.mute_while_speaking;
@@ -239,20 +272,40 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
             mic_rs.process(&chunk, &mut mic_buf);
         }
         let played = std::mem::take(&mut *reference.lock().unwrap());
+        // Kalibrierung: Messton im Referenzsignal erkennen, bevor ein Rückstand unten verworfen wird
+        if let Some(c) = app.calib.lock().unwrap().as_mut()
+            && c.ref_at.is_none()
+            && played
+                .chunks(FRAME * 3)
+                .any(|b| dsp::rms(b) > CALIB_REF_LEVEL)
+        {
+            c.ref_at = Some(c.frame);
+        }
         ref_rs.process(&played, &mut ref_buf);
         // Mehr als eine halbe Sekunde Rückstand beim Referenzsignal: verwerfen statt immer weiter auflaufen lassen
-        if ref_buf.len() > dsp::RATE as usize / 2 {
-            let drop = ref_buf.len() - FRAME * 4;
+        if ref_buf.len() > ref_delay + dsp::RATE as usize / 2 {
+            let drop = ref_buf.len() - ref_delay - FRAME * 4;
             ref_buf.drain(..drop);
         }
 
         while mic_buf.len() >= FRAME {
             // Erst, was der Lautsprecher gespielt hat, dann das Mikrofon – so findet AEC3 das Echo
+            let mut cal = app.calib.lock().unwrap();
             while ref_buf.len() >= FRAME {
                 let mut r: Vec<f32> = ref_buf.drain(..FRAME).collect();
                 aec.render(&mut r);
             }
             let mut frame: Vec<f32> = mic_buf.drain(..FRAME).collect();
+            // Messung am rohen Mikrofon – der Echo-Filter würde den Ton ja gerade herausrechnen
+            if let Some(c) = cal.as_mut()
+                && let Some(result) = calib_step(c, dsp::rms(&frame) as f32)
+            {
+                if let Some(tx) = c.done.take() {
+                    let _ = tx.send(result);
+                }
+                *cal = None;
+            }
+            drop(cal);
             aec.capture(&mut frame);
             let level = dsp::rms(&frame);
             peak = peak.max(level);
@@ -270,6 +323,10 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
                 if let Some(tx) = app.mic.lock().unwrap().as_ref() {
                     let _ = tx.try_send(out);
                 }
+                wake_buf.clear();
+                continue;
+            }
+            if learning(app, model.as_ref(), &pcm) {
                 wake_buf.clear();
                 continue;
             }
@@ -300,6 +357,56 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
             }
         }
     }
+}
+
+/// Ab diesem Pegel (RMS, i16-Skala) gilt der Messton im Referenzsignal als gestartet.
+const CALIB_REF_LEVEL: u32 = 1500;
+/// So lange wird höchstens gemessen (in 10-ms-Blöcken, 12 s – ohne eigenen Puffer kann es Sekunden dauern).
+const CALIB_MAX_FRAMES: u64 = 1200;
+
+/// Ein Mikrofon-Block der Kalibrierung. `Some(Some(n))` = Ton nach n Blöcken gehört, `Some(None)` = nichts gehört, `None` = weiter.
+fn calib_step(c: &mut crate::state::Calib, level: f32) -> Option<Option<i64>> {
+    c.frame += 1;
+    match c.ref_at {
+        // Vor dem Ton: Grundrauschen lernen
+        None => {
+            c.noise = if c.frame == 1 {
+                level
+            } else {
+                c.noise * 0.9 + level * 0.1
+            }
+        }
+        Some(at) if level > (c.noise * 4.0).max(300.0) => {
+            c.mic_at = Some(c.frame);
+            return Some(Some(c.frame as i64 - at as i64));
+        }
+        Some(_) => {}
+    }
+    (c.frame > CALIB_MAX_FRAMES).then_some(None)
+}
+
+/// „Namen einsprechen“: sammelt das Mikrofon (erst nach dem Signalton) und lässt Vosk frei erkennen. `true` = Aufnahme läuft.
+fn learning(app: &App, model: Option<&vosk::Model>, pcm: &[i16]) -> bool {
+    let mut guard = app.learn.lock().unwrap();
+    let Some(l) = guard.as_mut() else {
+        return false;
+    };
+    if app.playing() {
+        return true;
+    }
+    l.buf.extend_from_slice(pcm);
+    if l.buf.len() < l.need {
+        return true;
+    }
+    let mut l = guard.take().expect("Aufnahme");
+    drop(guard);
+    let text = model
+        .map(|m| wake::transcribe(m, &l.buf))
+        .unwrap_or_default();
+    if let Some(tx) = l.done.take() {
+        let _ = tx.send(text);
+    }
+    true
 }
 
 fn build_input(
@@ -348,6 +455,15 @@ where
         None,
     )?;
     Ok(stream)
+}
+
+/// Periodengröße in Frames für den gewünschten Puffer (cpal nimmt 2 Perioden), im erlaubten Bereich des Geräts.
+fn period_frames(rate: u32, buffer_ms: u32, supported: &cpal::SupportedBufferSize) -> u32 {
+    let want = (u64::from(rate) * u64::from(buffer_ms) / 2000).max(64) as u32;
+    match *supported {
+        cpal::SupportedBufferSize::Range { min, max } if min <= max => want.clamp(min, max),
+        _ => want,
+    }
 }
 
 fn build_output(
@@ -450,6 +566,7 @@ pub fn beep(app: &App, kind: Beep) {
         Beep::End => &[(880.0, 70), (587.0, 120)],
         Beep::Error => &[(330.0, 160), (0.0, 60), (330.0, 160)],
         Beep::Test => &[(523.0, 150), (659.0, 150), (784.0, 250)],
+        Beep::Calibrate => &[(1000.0, 250)],
     };
     app.play(&dsp::tone(rate, notes, 0.25));
 }
@@ -460,4 +577,44 @@ pub enum Beep {
     End,
     Error,
     Test,
+    /// Kurzer, klarer Messton für die Kalibrierung.
+    Calibrate,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kalibrierung_zaehlt_bloecke() {
+        let mut c = crate::state::Calib::default();
+        for _ in 0..20 {
+            assert_eq!(calib_step(&mut c, 50.0), None);
+        }
+        c.ref_at = Some(c.frame);
+        // 25 Blöcke leise, dann kommt der Ton im Mikrofon an
+        for _ in 0..24 {
+            assert_eq!(calib_step(&mut c, 60.0), None);
+        }
+        assert_eq!(calib_step(&mut c, 4000.0), Some(Some(25)));
+        // ohne Ton: irgendwann aufgeben
+        let mut c = crate::state::Calib::default();
+        let mut last = None;
+        for _ in 0..=CALIB_MAX_FRAMES {
+            last = calib_step(&mut c, 50.0);
+        }
+        assert_eq!(last, Some(None));
+    }
+
+    #[test]
+    fn puffer_in_frames() {
+        let any = cpal::SupportedBufferSize::Unknown;
+        assert_eq!(period_frames(48_000, 100, &any), 2400);
+        let range = cpal::SupportedBufferSize::Range {
+            min: 1024,
+            max: 4096,
+        };
+        assert_eq!(period_frames(48_000, 20, &range), 1024);
+        assert_eq!(period_frames(48_000, 1000, &range), 4096);
+    }
 }
