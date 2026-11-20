@@ -24,6 +24,8 @@ pub enum Phase {
     Muted,
     /// Audio-Gerät fehlt oder ist kaputt.
     Error,
+    /// Mein Handy ist nicht in der Nähe: hört nicht auf das Wake-Word.
+    Away,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +72,7 @@ pub struct Status {
     pub last_text: VecDeque<(String, String)>,
     pub wifi: crate::wifi::Status,
     pub bluetooth: crate::bluetooth::Status,
+    pub presence: crate::presence::Status,
 }
 
 pub struct App {
@@ -85,6 +88,8 @@ pub struct App {
     pub last_web: AtomicU64,
     /// Audio neu aufbauen (z. B. Bluetooth-Lautsprecher kam oder ging).
     pub rebuild_audio: AtomicBool,
+    /// Handy in der Nähe (oder Anwesenheit aus): nur dann gilt das Wake-Word.
+    pub present: AtomicBool,
     /// Gespräch läuft: Mikrofon geht an IDA statt ans Wake-Word.
     pub talking: AtomicBool,
     /// Mikrofon-Audio für das laufende Gespräch (16 kHz, i16).
@@ -133,6 +138,7 @@ impl App {
                 last_text: VecDeque::new(),
                 wifi: Default::default(),
                 bluetooth: Default::default(),
+                presence: Default::default(),
             }),
             sessions: Mutex::new(Default::default()),
             commands,
@@ -140,6 +146,7 @@ impl App {
             muted: AtomicBool::new(false),
             last_web: AtomicU64::new(0),
             rebuild_audio: AtomicBool::new(false),
+            present: AtomicBool::new(true),
             talking: AtomicBool::new(false),
             mic: Mutex::new(None),
             playback: Mutex::new(Playback::default()),
@@ -221,6 +228,17 @@ impl App {
 
     pub fn web_active(&self) -> bool {
         now_s().saturating_sub(self.last_web.load(Ordering::Relaxed)) < 120
+    }
+
+    /// Zustand, wenn gerade kein Gespräch läuft.
+    pub fn idle_phase(&self) -> Phase {
+        if self.muted() {
+            Phase::Muted
+        } else if !self.present.load(Ordering::Relaxed) {
+            Phase::Away
+        } else {
+            Phase::Listening
+        }
     }
 
     pub fn muted(&self) -> bool {

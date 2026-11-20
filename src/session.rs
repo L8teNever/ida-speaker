@@ -150,11 +150,7 @@ pub async fn run(app: Arc<App>, mut commands: mpsc::UnboundedReceiver<Command>) 
         app.trigger(&source, &result);
         app.talking.store(false, Ordering::Relaxed);
         *app.mic.lock().unwrap() = None;
-        app.set_phase(if app.muted() {
-            Phase::Muted
-        } else {
-            Phase::Listening
-        });
+        app.set_phase(app.idle_phase());
         // Befehle, die während des Gesprächs auflaufen (z. B. doppelt erkanntes Wake-Word), verwerfen
         while commands.try_recv().is_ok() {}
     }

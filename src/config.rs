@@ -15,6 +15,7 @@ pub struct Config {
     pub cloudflare: Cloudflare,
     pub wifi: Wifi,
     pub assistant: Assistant,
+    pub presence: Presence,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -183,6 +184,32 @@ pub struct Assistant {
     pub smart_home: bool,
 }
 
+/// Nur reagieren, wenn mein Handy da ist (Bluetooth-Anwesenheit).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Presence {
+    pub enabled: bool,
+    /// Gekoppeltes Handy (MAC) und sein Name.
+    pub mac: String,
+    pub name: String,
+    /// So lange ohne Antwort, dann gilt das Handy als weg.
+    pub away_after_s: u32,
+    /// Nur wenn die Signalstärke bekannt ist: schwächer als das (dBm) gilt als zu weit weg. 0 = egal.
+    pub min_rssi: i32,
+}
+
+impl Default for Presence {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mac: String::new(),
+            name: String::new(),
+            away_after_s: 60,
+            min_rssi: 0,
+        }
+    }
+}
+
 /// WLAN über NetworkManager des Pi. Ohne Netz macht der Lautsprecher ein eigenes Einrichtungs-WLAN auf.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -301,6 +328,11 @@ impl Config {
         next.ida.access_client_secret = next.ida.access_client_secret.trim().to_string();
         if !matches!(next.ida.via.as_str(), "domain" | "warp" | "lan") {
             next.ida.via = String::new();
+        }
+        next.presence.away_after_s = next.presence.away_after_s.clamp(15, 1800);
+        next.presence.min_rssi = next.presence.min_rssi.clamp(-100, 0);
+        if next.presence.mac.is_empty() {
+            next.presence.enabled = false;
         }
         next.ida.url = next.ida.url.trim().trim_end_matches('/').to_string();
         next.ida.device_name = next.ida.device_name.trim().to_lowercase();

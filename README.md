@@ -59,6 +59,15 @@ Unter **Audio → Bluetooth-Lautsprecher** drückst du „Geräte suchen“ und 
 
 Technisch läuft das über BlueZ und bluez-alsa auf dem Pi, beides richtet `install.sh` ein. Am besten nimmst du Raspberry Pi OS **Lite**. Auf der Desktop-Version übernimmt PipeWire Bluetooth.
 
+## Nur wenn mein Handy da ist
+
+Unter **Wake-Word → Nur wenn mein Handy da ist** koppelst du einmal dein Handy. Danach reagiert der Lautsprecher nur auf das Wake-Word, solange das Handy in der Nähe ist. Ist es weg, zeigt die Website „Handy weg“, und er hört nicht zu.
+
+- Der Pi klopft alle paar Sekunden per Bluetooth beim Handy an.
+- Antwortet es eine einstellbare Zeit nicht (Standard 60 s), gilt es als weg.
+- Genaue Meter misst Bluetooth nicht. „Da“ heißt in Reichweite, in der Wohnung meist 5 bis 10 m. Ist die Signalstärke bekannt, kannst du mit „Mindest-Signal“ enger einstellen.
+- Bluetooth am Handy einfach anlassen. Ein Gespräch per Knopf auf der Website geht immer.
+
 ## Benutzen
 
 - „Stella“ sagen (oder dein Wort). Ein kurzer Ton zeigt, dass sie zuhört, und sie meldet sich.

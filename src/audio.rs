@@ -190,11 +190,7 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
         ));
     }
     if !app.talking.load(Ordering::Relaxed) {
-        app.set_phase(if app.muted() {
-            Phase::Muted
-        } else {
-            Phase::Listening
-        });
+        app.set_phase(app.idle_phase());
     }
 
     let mut mic_rs = Resampler::new(in_rate, dsp::RATE);
@@ -275,7 +271,7 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
                 wake_buf.clear();
                 continue;
             }
-            if !wake_on || app.muted() || app.playing() {
+            if !wake_on || app.muted() || !app.present.load(Ordering::Relaxed) || app.playing() {
                 wake_buf.clear();
                 continue;
             }

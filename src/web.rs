@@ -52,6 +52,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/bluetooth/connect", post(bt_connect))
         .route("/api/bluetooth/disconnect", post(bt_disconnect))
         .route("/api/bluetooth/forget", post(bt_forget))
+        .route("/api/presence/pair", post(presence_pair))
         .with_state(app)
 }
 
@@ -219,6 +220,7 @@ async fn state(State(app): S, headers: HeaderMap) -> Response {
         "warp": s.warp,
         "wifi": s.wifi,
         "bluetooth": s.bluetooth,
+        "presence": s.presence,
         "triggers": s.triggers,
         "logs": s.logs.iter().rev().take(80).collect::<Vec<_>>(),
         "conversation": s.last_text.iter().map(|(w, t)| json!({"who": w, "text": t})).collect::<Vec<_>>(),
@@ -321,7 +323,7 @@ async fn mute(State(app): S, headers: HeaderMap, Json(m): Json<Mute>) -> Respons
         app.phase(),
         Phase::Talking | Phase::Connecting | Phase::Error | Phase::Starting
     ) {
-        app.set_phase(if m.on { Phase::Muted } else { Phase::Listening });
+        app.set_phase(app.idle_phase());
     }
     app.log(if m.on {
         "Stumm: hört nicht auf das Wake-Word"
@@ -572,6 +574,37 @@ async fn bt_forget(State(app): S, headers: HeaderMap, Json(d): Json<BtDevice>) -
         Ok(()) => Json(json!({ "ok": true, "message": "Vergessen" })).into_response(),
         Err(e) => Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response(),
     }
+}
+
+/// Handy für die Anwesenheit koppeln (ohne Audio-Verbindung) und auswählen.
+async fn presence_pair(State(app): S, headers: HeaderMap, Json(d): Json<BtDevice>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let mac = match bt_mac(&d) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    if app.cfg().audio.bluetooth == mac {
+        return Json(json!({ "ok": false, "message": "Das ist der Bluetooth-Lautsprecher – nimm dein Handy." })).into_response();
+    }
+    if let Err(e) = crate::bluetooth::pair(&mac, false).await {
+        return Json(json!({ "ok": false, "message": format!("{e:#} – öffne am Handy die Bluetooth-Einstellungen, damit es sichtbar ist, und bestätige die Kopplung dort.") })).into_response();
+    }
+    let name = if d.name.trim().is_empty() {
+        crate::bluetooth::info(&mac).await.name
+    } else {
+        d.name.trim().to_string()
+    };
+    let mut next = app.cfg();
+    next.presence.mac = mac;
+    next.presence.name = name.clone();
+    next.presence.enabled = true;
+    if let Err(e) = app.save_config(next) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+    app.log(format!("Anwesenheit: „{name}“ gekoppelt"));
+    Json(json!({ "ok": true, "message": format!("„{name}“ ist jetzt dein Handy. Ist es weg, hört der Lautsprecher nicht auf das Wake-Word.") })).into_response()
 }
 
 #[cfg(test)]

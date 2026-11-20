@@ -22,6 +22,7 @@
     box-shadow: 0 0 0 0 rgba(var(--accent-rgb), .0); transition: box-shadow .4s var(--emph); }
   .orb.listening { box-shadow: 0 0 14px 2px rgba(var(--accent-rgb), .35); }
   .orb.talking { box-shadow: 0 0 26px 8px rgba(var(--accent-rgb), .7); animation: pulse 1.4s infinite; }
+  .orb.away { opacity: .45; }
   .orb.error { box-shadow: 0 0 18px 4px rgba(242,139,130,.6); }
   @keyframes pulse { 50% { box-shadow: 0 0 34px 12px rgba(var(--accent-rgb), .45); } }
   h1 { font-size: 24px; font-weight: 500; margin: 0; color: var(--accent); }
@@ -88,7 +89,7 @@ async function api(path, body) {
   if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
   return j;
 }
-const PHASE = { starting: "startet", listening: "hört zu", connecting: "verbindet", talking: "im Gespräch", muted: "stumm", error: "Fehler" };
+const PHASE = { starting: "startet", listening: "hört zu", connecting: "verbindet", talking: "im Gespräch", muted: "stumm", error: "Fehler", away: "Handy weg – hört nicht zu" };
 let S = null, tab = "status", levelTimer = null, stateTimer = null, devices = null;
 
 function authScreen(setup, error = "") {
@@ -196,6 +197,7 @@ function renderLive() {
     ["Status", PHASE[S.phase], S.phase === "error" ? "bad" : S.phase === "muted" ? "warn" : "good"],
     ["Wake-Word", a.model ? `„${c.wake.word}“` : "kein Modell", a.model && !a.unknown_words.length ? "good" : "warn"],
     ["Echo-Filter", a.echo_filter ? "an" : "aus", a.echo_filter ? "good" : "warn"],
+    ...(c.presence.enabled ? [["Handy", S.presence?.present ? "da" : "weg", S.presence?.present ? "good" : "warn"]] : []),
     ["Cloudflare", !c.cloudflare.enabled ? "aus" : w.connected ? "verbunden" : "nicht verbunden", !c.cloudflare.enabled ? "" : w.connected ? "good" : "bad"],
     ["Mikrofon", a.input || "–", a.error ? "bad" : "good"],
     ["Lautsprecher", a.output || "–", a.error ? "bad" : "good"],
@@ -282,9 +284,28 @@ function wakeTab() {
     <p class="hint" style="margin:4px 0 0">Höher = reagiert leichter, aber öfter aus Versehen.</p>
     <label>Mikrofon-Pegel</label><div class="meter"><i></i></div>
     <label>Zuletzt gehört</label><div id="heard" class="sub">–</div>
-    ${saveRow()}</div>`;
+    ${saveRow()}</div>
+  ${presenceCard()}`;
 }
 let btList = null, btBusy = "";
+function presenceCard() {
+  const p = S.presence || {}, c = S.config.presence, b = S.bluetooth || {};
+  const ago = p.last_seen ? Math.max(0, Math.round(Date.now() / 1000 - p.last_seen)) : null;
+  const state = !c.enabled ? `<i class="dot"></i>Aus – hört immer auf das Wake-Word.` :
+    `<i class="dot ${p.present ? "good" : "warn"}"></i>${esc(c.name || c.mac)} ist ${p.present ? "da" : "weg"}${ago !== null ? ` (zuletzt gesehen vor ${ago < 90 ? ago + " s" : Math.round(ago / 60) + " min"})` : ""}${p.rssi != null ? `, Signal ${p.rssi} dBm` : ""}.`;
+  const list = btList === null ? "" : btList.length ? `<ul class="trig">${btList.map((d, i) => `<li style="display:flex;align-items:center;gap:10px"><span style="flex:1;font-size:14px;color:var(--on-surface)">${esc(d.name)}<br><small class="sub">${esc(d.mac)}${d.paired ? " · gekoppelt" : ""}</small></span>
+      ${d.mac === c.mac ? `<small class="sub">dein Handy</small>` : `<button class="btn" data-phone="${i}">Das ist mein Handy</button>`}</li>`).join("")}</ul>` : `<p class="sub">Nichts gefunden.</p>`;
+  return `<div class="card"><h2>Nur wenn mein Handy da ist</h2>
+    <p class="hint">Der Lautsprecher reagiert nur auf das Wake-Word, solange dein Handy in der Nähe ist. Dafür klopft er alle paar Sekunden per Bluetooth an. Genaue Meter kann Bluetooth nicht messen: „Da“ heißt in Reichweite, in der Wohnung meist 5–10 m. Ist die Signalstärke bekannt, kannst du unten enger einstellen.</p>
+    <p>${state}</p>
+    ${b.available === false ? `<div class="msg bad">${esc(b.error || "Bluetooth nicht verfügbar")}</div>` : ""}
+    ${toggle("presence.enabled", "Nur reagieren, wenn mein Handy da ist")}
+    ${range("presence.away_after_s", "Gilt als weg nach", 15, 600, 15, fmts.sec)}
+    ${range("presence.min_rssi", "Mindest-Signal (0 = egal, -60 ≈ nah, -80 ≈ weiter weg)", -100, 0, 5, fmts.raw)}
+    ${saveRow(`<button class="btn" id="phscan" ${btBusy ? "disabled" : ""}>${btBusy === "scan" ? "Suche … (10 s)" : "Handy suchen"}</button>`)}
+    ${list}
+    ${howto("So koppelst du dein Handy", ["Am Handy die Bluetooth-Einstellungen öffnen und offen lassen – nur dann ist es für andere sichtbar.", "Hier „Handy suchen“ drücken und bei deinem Handy „Das ist mein Handy“.", "Am Handy die Kopplung bestätigen. Fertig – Bluetooth am Handy einfach anlassen."])}</div>`;
+}
 function btCard() {
   const b = S.bluetooth || {}, c = S.config.audio;
   if (!b.available) return `<div class="card"><h2>Bluetooth-Lautsprecher</h2><p class="sub">${esc(b.error || "Bluetooth wird geprüft …")}</p></div>`;
@@ -301,7 +322,7 @@ function btCard() {
 async function btAction(btn, path, d) {
   const out = $(".out", btn.closest(".card"));
   btn.disabled = true; out.innerHTML = `<div class="msg ok">${path.endsWith("connect") ? "Kopple und verbinde … (bis zu einer Minute)" : "Einen Moment …"}</div>`;
-  try { const r = await api(path, { mac: d.mac, name: d.name }); await refresh(); if (btList) btList = (await api("/api/bluetooth/scan", {})).devices; render(); const o = $(".out", $("#btscan").closest(".card")); if (o) o.innerHTML = `<div class="msg ${r.ok ? "ok" : "bad"}">${esc(r.message)}</div>`; }
+  try { const r = await api(path, { mac: d.mac, name: d.name }); await refresh(); if (btList) btList = (await api("/api/bluetooth/scan", {})).devices; render(); const anchor = path.includes("presence") ? $("#phscan") : $("#btscan"); const o = anchor && $(".out", anchor.closest(".card")); if (o) o.innerHTML = `<div class="msg ${r.ok ? "ok" : "bad"}">${esc(r.message)}</div>`; }
   catch (e) { out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; btn.disabled = false; }
 }
 
@@ -481,6 +502,8 @@ async function render() {
   const rs = $("#rescan"); if (rs) rs.onclick = () => { wifiData = null; render(); loadWifi(); };
   const ca = $("#cfauto"); if (ca) ca.onclick = () => cfAuto(ca, {});
   const wc = $("#wzcf"); if (wc) wc.onclick = () => { cfPick.mode = wc.dataset.mode; cfAuto(wc, {}); };
+  const ps = $("#phscan"); if (ps) ps.onclick = async () => { btBusy = "scan"; render(); try { btList = (await api("/api/bluetooth/scan", {})).devices; } catch { btList = []; } btBusy = ""; render(); };
+  document.querySelectorAll("[data-phone]").forEach(b => b.onclick = () => btAction(b, "/api/presence/pair", btList[b.dataset.phone]));
   const bs = $("#btscan"); if (bs) bs.onclick = async () => { btBusy = "scan"; render(); try { const r = await api("/api/bluetooth/scan", {}); btList = r.devices; if (!r.ok) setTimeout(() => { const o = $(".out", $("#btscan").closest(".card")); if (o) o.innerHTML = `<div class="msg bad">${esc(r.message)}</div>`; }); } catch (e) { btList = []; } btBusy = ""; render(); };
   document.querySelectorAll("[data-bton]").forEach(b => b.onclick = () => btAction(b, "/api/bluetooth/connect", btList[b.dataset.bton]));
   document.querySelectorAll("[data-btoff]").forEach(b => b.onclick = () => btAction(b, "/api/bluetooth/disconnect", btList[b.dataset.btoff]));

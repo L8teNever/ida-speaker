@@ -259,6 +259,11 @@ pub async fn scan(seconds: u64) -> anyhow::Result<Vec<Device>> {
 
 /// Koppeln (falls nötig), vertrauen (damit er sich nach dem Neustart wieder verbindet) und verbinden.
 pub async fn pair_connect(mac: &str) -> anyhow::Result<()> {
+    pair(mac, true).await
+}
+
+/// Koppeln und vertrauen; `connect` = danach auch verbinden (Lautsprecher), sonst nur gekoppelt lassen (Handy).
+pub async fn pair(mac: &str, connect: bool) -> anyhow::Result<()> {
     let known = info(mac).await;
     let mut steps: Vec<(String, &[&str], &[&str], u64)> = vec![
         ("power on".into(), &[][..], &[][..], 300),
@@ -299,14 +304,95 @@ pub async fn pair_connect(mac: &str) -> anyhow::Result<()> {
             10,
         ));
     }
-    steps.push((
-        format!("connect {mac}"),
-        &["Connection successful", "AlreadyConnected"][..],
-        &["Failed to connect", "not available"][..],
-        30,
-    ));
+    if connect {
+        steps.push((
+            format!("connect {mac}"),
+            &["Connection successful", "AlreadyConnected"][..],
+            &["Failed to connect", "not available"][..],
+            30,
+        ));
+    }
     session(&steps).await?;
     Ok(())
+}
+
+/// Ergebnis von „ist das Gerät in Reichweite?“
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Reach {
+    /// Gerät hat geantwortet (verbunden oder hat auf die Anfrage reagiert).
+    Near,
+    /// Keine Antwort (aus, zu weit weg, Bluetooth aus).
+    Away,
+    /// Konnte nicht prüfen (Bluetooth des Pi fehlt …).
+    Unknown,
+}
+
+/// Deutet die Antwort von `bluetoothctl connect` auf ein gekoppeltes Handy: Auch „kein passendes Profil“ heißt,
+/// es hat geantwortet. Nur Seitenaufruf-Timeout, „Host is down“ und Co. heißen weg.
+pub fn classify_connect(out: &str) -> Reach {
+    let o = out.to_lowercase();
+    if o.contains("connection successful")
+        || o.contains("alreadyconnected")
+        || o.contains("already connected")
+    {
+        return Reach::Near;
+    }
+    let away = [
+        "page-timeout",
+        "host is down",
+        "connection timed out",
+        "not available",
+        "le-connection-abort",
+        "br-connection-create-socket",
+        "no route",
+    ];
+    if away.iter().any(|a| o.contains(a)) {
+        return Reach::Away;
+    }
+    if o.contains("profile-unavailable")
+        || o.contains("br-connection-refused")
+        || o.contains("in progress")
+        || o.contains("canceled")
+    {
+        return Reach::Near;
+    }
+    if o.contains("failed to connect") {
+        Reach::Away
+    } else {
+        Reach::Unknown
+    }
+}
+
+/// Signalstärke aus `bluetoothctl info` (nur vorhanden, wenn das Gerät gerade gesehen wurde).
+pub fn parse_rssi(text: &str) -> Option<i32> {
+    text.lines().find_map(|l| {
+        let v = l.trim().strip_prefix("RSSI:")?.trim();
+        // „-60“ oder „0xffffffc4 (-60)“
+        let v = v
+            .rsplit_once('(')
+            .map(|(_, r)| r.trim_end_matches(')'))
+            .unwrap_or(v);
+        v.trim().parse().ok()
+    })
+}
+
+/// Klopft kurz beim gekoppelten Handy an. War es nicht ohnehin verbunden, wird die Verbindung gleich wieder getrennt,
+/// damit es nicht etwa seine Musik über den Pi abspielt.
+pub async fn probe(mac: &str) -> (Reach, Option<i32>) {
+    let text = ctl(&["info", mac], 8).await.unwrap_or_default();
+    let rssi = parse_rssi(&text);
+    if parse_info(mac, &text).connected {
+        return (Reach::Near, rssi);
+    }
+    let out = match ctl(&["connect", mac], 12).await {
+        Ok(o) => o,
+        Err(_) => return (Reach::Away, rssi),
+    };
+    let reach = classify_connect(&out);
+    if reach == Reach::Near {
+        let _ = ctl(&["disconnect", mac], 8).await;
+    }
+    (reach, rssi)
 }
 
 pub async fn disconnect(mac: &str) -> anyhow::Result<()> {
@@ -417,6 +503,38 @@ mod tests {
         assert_eq!(d.name, "Küchenbox");
         assert!(d.paired && d.connected && !d.trusted && d.audio);
         assert_eq!(d.mac, "11:22:33:AA:BB:CC");
+    }
+
+    #[test]
+    fn presence_probe_parsing() {
+        assert_eq!(
+            classify_connect("Attempting to connect to X\nConnection successful"),
+            Reach::Near
+        );
+        assert_eq!(
+            classify_connect(
+                "Failed to connect: org.bluez.Error.Failed br-connection-profile-unavailable"
+            ),
+            Reach::Near
+        );
+        assert_eq!(
+            classify_connect(
+                "Failed to connect: org.bluez.Error.Failed br-connection-page-timeout"
+            ),
+            Reach::Away
+        );
+        assert_eq!(
+            classify_connect("Failed to connect: org.bluez.Error.Failed Host is down"),
+            Reach::Away
+        );
+        assert_eq!(
+            classify_connect("Device 11:22:33:44:55:66 not available"),
+            Reach::Away
+        );
+        assert_eq!(classify_connect(""), Reach::Unknown);
+        assert_eq!(parse_rssi("\tRSSI: -61"), Some(-61));
+        assert_eq!(parse_rssi("\tRSSI: 0xffffffc4 (-60)"), Some(-60));
+        assert_eq!(parse_rssi("\tConnected: no"), None);
     }
 
     #[test]
