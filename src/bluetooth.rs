@@ -406,6 +406,8 @@ pub async fn remove(mac: &str) -> anyhow::Result<()> {
 }
 
 /// ALSA-Gerät `ida_bluetooth` für den gewählten Lautsprecher (bluez-alsa). Leer = Gerät entfernen.
+/// Fest auf Stereo: sonst stellt bluez-alsa die Verbindung bei Mono-Ton auf 1 Kanal um, und viele
+/// günstige Boxen spielen dann zu schnell, zu hoch oder abgehackt.
 pub fn asoundrc(mac: &str, name: &str) -> String {
     if !valid_mac(mac) {
         return String::new();
@@ -413,7 +415,7 @@ pub fn asoundrc(mac: &str, name: &str) -> String {
     let name = name.replace(['"', '\\', '\n'], "");
     format!(
         "# von ida-speaker geschrieben – Bluetooth-Lautsprecher über bluez-alsa\n\
-         pcm.ida_bluetooth {{\n  type plug\n  slave.pcm {{\n    type bluealsa\n    device \"{mac}\"\n    profile \"a2dp\"\n  }}\n  \
+         pcm.ida_bluetooth {{\n  type plug\n  slave {{\n    pcm {{\n      type bluealsa\n      device \"{mac}\"\n      profile \"a2dp\"\n    }}\n    channels 2\n  }}\n  \
          hint {{\n    show on\n    description \"Bluetooth: {name}\"\n  }}\n}}\n"
     )
 }
@@ -555,6 +557,7 @@ mod tests {
             rc.contains("device \"11:22:33:AA:BB:CC\"")
                 && rc.contains("Bluetooth: Box 1")
                 && rc.contains("type bluealsa")
+                && rc.contains("channels 2")
         );
         assert_eq!(asoundrc("kaputt", "x"), "");
     }
