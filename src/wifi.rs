@@ -264,7 +264,10 @@ pub async fn connect(ssid: &str, password: &str) -> anyhow::Result<String> {
         r => r,
     };
     match res {
-        Ok(t) => Ok(t),
+        Ok(t) => {
+            keep_profile(ssid).await;
+            Ok(t)
+        }
         Err(e) => {
             remove_profiles(ssid).await;
             if is_secret_error(&e.to_string()) {
@@ -297,6 +300,25 @@ async fn add_psk_profile(ssid: &str, password: &str) -> anyhow::Result<String> {
     ])
     .await?;
     nmcli(&["connection", "up", ssid]).await
+}
+
+/// Passwort fest im Profil speichern und automatisch verbinden – so ist das WLAN auch nach einem Neustart wieder da.
+/// (Ohne Schlüsselbund im Container legt nmcli das Passwort sonst unter Umständen nur für diese Sitzung ab.)
+async fn keep_profile(ssid: &str) {
+    for (name, s) in saved_wifi().await {
+        if s == ssid {
+            let _ = nmcli(&[
+                "connection",
+                "modify",
+                &name,
+                "wifi-sec.psk-flags",
+                "0",
+                "connection.autoconnect",
+                "yes",
+            ])
+            .await;
+        }
+    }
 }
 
 async fn remove_profiles(ssid: &str) {

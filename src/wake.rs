@@ -17,6 +17,10 @@ pub struct Detector {
     /// Was der Erkennung zuletzt gegeben wurde (für den Befehl direkt nach dem Namen) und wie viel seit dem Zurücksetzen.
     fed: std::collections::VecDeque<i16>,
     fed_total: u64,
+    /// Ab hier läuft der aktuelle Satz (fed_total beim letzten Satzende) – für den Treffer schon während des Sprechens.
+    utt_start: u64,
+    /// Name im Zwischenergebnis, noch nicht bestätigt: (welcher, Position, wie oft hintereinander gesehen).
+    early: Option<(usize, usize, u8)>,
 }
 
 /// Erkanntes Wake-Word: welches (0 = Hauptname, 1 = zweiter Name) und was danach schon gesagt wurde.
@@ -29,6 +33,9 @@ pub struct Hit {
 
 /// So viel Audio hebt der Detektor auf (8 s).
 const KEEP: usize = 8 * crate::dsp::RATE as usize;
+
+/// So oft hintereinander muss der Name im Zwischenergebnis stehen (mit Worten danach), bevor er schon während des Sprechens zählt.
+const EARLY_STABLE: u8 = 2;
 
 /// Sucht das Sprachmodell: zuerst ein eigenes in `/data/model`, sonst das im Image.
 pub fn model_path(data: &Path) -> Option<PathBuf> {
@@ -94,6 +101,8 @@ impl Detector {
             heard: String::new(),
             fed: std::collections::VecDeque::with_capacity(KEEP),
             fed_total: 0,
+            utt_start: 0,
+            early: None,
         }
     }
 
@@ -109,9 +118,47 @@ impl Detector {
             self.fed.pop_front();
         }
         self.fed_total += pcm.len() as u64;
-        let Ok(DecodingState::Finalized) = rec.accept_waveform(pcm) else {
-            return None;
-        };
+        match rec.accept_waveform(pcm) {
+            Ok(DecodingState::Finalized) => {}
+            Ok(DecodingState::Running) => {
+                // „Nina, Licht an“ in einem Atemzug: nicht warten, bis er still ist – der Name im Zwischenergebnis,
+                // gefolgt von weiteren Worten, zählt, sobald er zweimal hintereinander gleich dasteht.
+                let words: Vec<String> = rec
+                    .partial_result()
+                    .partial
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect();
+                // nur der zweite Name (Befehle) – Stella wartet wie bisher aufs Satzende
+                let seen = early_match(&words, &self.phrases).filter(|(which, _)| *which == 1);
+                self.early = match (seen, self.early) {
+                    (Some((w, p)), Some((ew, ep, n))) if (w, p) == (ew, ep) => {
+                        Some((w, p, n.saturating_add(1)))
+                    }
+                    (Some((w, p)), _) => Some((w, p, 1)),
+                    (None, _) => None,
+                };
+                if let Some((which, _, n)) = self.early
+                    && n >= EARLY_STABLE
+                {
+                    self.heard = words
+                        .iter()
+                        .filter(|w| *w != "[unk]")
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    // Ohne Wortzeiten: der ganze Satz ab seinem Anfang (mit Name) – die Spracherkennung auf dem Server kommt damit klar
+                    return Some(Hit {
+                        which,
+                        after: self.since(self.utt_start),
+                    });
+                }
+                return None;
+            }
+            _ => return None,
+        }
+        self.early = None;
+        self.utt_start = self.fed_total; // Satz zu Ende, der nächste beginnt hier
         let found: Vec<(String, f32, f32)> = match rec.result() {
             CompleteResult::Single(r) => r
                 .result
@@ -152,7 +199,11 @@ impl Detector {
 
     /// Audio ab Sekunde `end` (Zeit der Erkennung seit dem Zurücksetzen) bis jetzt.
     fn after(&self, end: f32) -> Vec<i16> {
-        let start = (end.max(0.0) * crate::dsp::RATE as f32) as u64;
+        self.since((end.max(0.0) * crate::dsp::RATE as f32) as u64)
+    }
+
+    /// Audio ab Sample `start` (seit dem Zurücksetzen) bis jetzt – höchstens das, was im Puffer liegt.
+    fn since(&self, start: u64) -> Vec<i16> {
         let ring_start = self.fed_total - self.fed.len() as u64;
         let from = start.saturating_sub(ring_start) as usize;
         self.fed.iter().skip(from).copied().collect()
@@ -164,6 +215,8 @@ impl Detector {
         }
         self.fed.clear();
         self.fed_total = 0;
+        self.utt_start = 0;
+        self.early = None;
     }
 }
 
@@ -250,6 +303,17 @@ pub fn find(found: &[(String, f32)], phrase: &[String], min_conf: f32) -> Option
         .map(|i| i + phrase.len() - 1)
 }
 
+/// Name im Zwischenergebnis (ohne Konfidenz) mit mindestens einem Wort danach: (welcher, Position des letzten Namenworts).
+/// Der Name allein reicht nicht – dann wartet er wie bisher aufs Satzende und prüft die Konfidenz.
+pub fn early_match(words: &[String], phrases: &[(usize, Vec<String>)]) -> Option<(usize, usize)> {
+    let found: Vec<(String, f32)> = words.iter().map(|w| (w.clone(), 1.0)).collect();
+    phrases.iter().find_map(|(which, phrase)| {
+        find(&found, phrase, 0.0)
+            .filter(|last| last + 1 < found.len())
+            .map(|last| (*which, last))
+    })
+}
+
 /// Kommt die Phrase in den erkannten Wörtern vor, jedes Wort mit mindestens `min_conf`?
 #[cfg(test)]
 pub fn matches(found: &[(String, f32)], phrase: &[String], min_conf: f32) -> bool {
@@ -301,6 +365,40 @@ mod tests {
         assert_eq!(d.after(0.2).len(), KEEP);
         // Name ganz am Ende → nichts
         assert!(d.after(9.0).is_empty());
+    }
+
+    #[test]
+    fn early_needs_words_after_the_name() {
+        let w = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let phrases = vec![(0, w(&["stella"])), (1, w(&["nina"]))];
+        assert_eq!(
+            early_match(&w(&["nina", "licht", "an"]), &phrases),
+            Some((1, 0))
+        );
+        assert_eq!(
+            early_match(&w(&["[unk]", "nina", "[unk]"]), &phrases),
+            Some((1, 1))
+        );
+        assert_eq!(
+            early_match(&w(&["stella", "[unk]"]), &phrases),
+            Some((0, 0))
+        );
+        // nur der Name: wie bisher aufs Satzende warten
+        assert_eq!(early_match(&w(&["nina"]), &phrases), None);
+        assert_eq!(early_match(&w(&["licht", "an"]), &phrases), None);
+        assert_eq!(early_match(&[], &phrases), None);
+    }
+
+    #[test]
+    fn audio_of_the_whole_sentence() {
+        let mut d = Detector::new(None, &Wake::default());
+        d.fed.extend((0..32000).map(|i| (i % 1000) as i16));
+        d.fed_total = 32000;
+        d.utt_start = 16000;
+        assert_eq!(d.since(d.utt_start).len(), 16000);
+        d.reset();
+        assert_eq!(d.utt_start, 0);
+        assert!(d.early.is_none());
     }
 
     #[test]

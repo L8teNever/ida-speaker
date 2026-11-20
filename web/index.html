@@ -110,7 +110,7 @@ function authScreen(setup, error = "") {
     catch (e) { $("#err").innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
   };
   $("#go").onclick = go;
-  document.querySelectorAll("input").forEach(i => i.onkeydown = e => e.key === "Enter" && go());
+  document.querySelectorAll("input").forEach(i => i.onkeydown = e => { if (e.key === "Enter") go(); });  // nie false zurückgeben – das blockiert das Tippen
   addEyes();
 }
 
@@ -534,7 +534,7 @@ async function render() {
       $("#wifipw").innerHTML = `<label>Passwort für „${esc(n.ssid)}“</label><input type="password" id="wpw" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><div class="row"><button class="btn primary" id="wgo">Verbinden</button></div>${msg ? `<div class="msg bad">${esc(msg)}</div>` : ""}`;
       addEyes($("#wifipw"));
       const send = () => { const pw = $("#wpw").value; if (!pw) { $("#wpw").focus(); return; } go(pw); };
-      $("#wpw").focus(); $("#wgo").onclick = send; $("#wpw").onkeydown = e => e.key === "Enter" && send();
+      $("#wpw").focus(); $("#wgo").onclick = send; $("#wpw").onkeydown = e => { if (e.key === "Enter") send(); };
     };
     const go = async pw => { out().innerHTML = `<div class="msg ok">Verbinde mit ${esc(n.ssid)} …</div>`;
       try {
