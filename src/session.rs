@@ -352,9 +352,9 @@ async fn talk(
                             "tool" => if m.running { app.log(format!("Werkzeug: {}", m.name)); last_activity = Instant::now(); },
                             "interrupted" => app.clear_playback(),
                             "music" => {
-                                let msg = match crate::spotify::Ctrl::parse(&m.action, m.value, &m.uri) {
-                                    Some(c) if app.music(c) => format!("Musik: {}", m.action),
-                                    Some(_) => "Musik: Spotify läuft auf diesem Lautsprecher nicht".into(),
+                                let msg = match crate::spotify::Ctrl::parse(&m.action, m.value, &m.uri).map(|c| app.music(c)) {
+                                    Some(true) => format!("Musik: {}", m.action),
+                                    Some(false) => "Musik: Spotify läuft auf diesem Lautsprecher nicht".into(),
                                     None => format!("Musik: unbekannter Befehl {}", m.action),
                                 };
                                 app.log(msg);
