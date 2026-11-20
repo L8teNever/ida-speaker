@@ -18,6 +18,10 @@ if [ "$UPDATE" = "1" ]; then
     echo "Schon aktuell – nichts zu tun."
     exit 0
   fi
+  # Neu seit Spotify: avahi, damit die Spotify-App den Lautsprecher findet
+  if command -v apt-get >/dev/null 2>&1 && ! command -v avahi-daemon >/dev/null 2>&1; then
+    $SUDO apt-get install -y -q avahi-daemon >/dev/null 2>&1 || true
+  fi
 else
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -45,6 +49,12 @@ if command -v apt-get >/dev/null 2>&1; then
     command -v rfkill >/dev/null 2>&1 && $SUDO rfkill unblock bluetooth 2>/dev/null || true
   fi
 fi
+# Spotify Connect: die Spotify-App findet den Lautsprecher über avahi des Pi (der Container meldet sich dort über D-Bus an)
+if command -v apt-get >/dev/null 2>&1 && ! command -v avahi-daemon >/dev/null 2>&1; then
+  echo "» Richte avahi ein (Spotify-App findet den Lautsprecher) …"
+  $SUDO apt-get install -y -q avahi-daemon >/dev/null 2>&1 || echo "» avahi ließ sich nicht installieren – in der Spotify-App taucht der Lautsprecher dann nicht auf."
+fi
+command -v systemctl >/dev/null 2>&1 && $SUDO systemctl enable --now avahi-daemon >/dev/null 2>&1 || true
 if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
   echo "» Hinweis: NetworkManager läuft nicht – WLAN über die Website geht dann nicht (Raspberry Pi OS ab Bookworm hat ihn)."
 fi
@@ -59,9 +69,9 @@ fi
 $SUDO docker rm -f ida-speaker >/dev/null 2>&1 || true
 $SUDO docker run -d --name ida-speaker --restart unless-stopped \
   --device /dev/snd --device /dev/net/tun --cap-add NET_ADMIN \
-  --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+  --sysctl net.ipv4.conf.all.src_valid_mark=1 --sysctl net.ipv6.conf.all.disable_ipv6=0 \
   -e TZ="${TZ:-Europe/Berlin}" \
-  -p 8080:8080 \
+  -p 8080:8080 -p 8082:8082 \
   -v ida-speaker:/data -v ida-speaker-warp:/var/lib/cloudflare-warp \
   -v /run/dbus/system_bus_socket:/run/host-dbus/system_bus_socket \
   -v /etc/hostname:/etc/host-hostname:ro \

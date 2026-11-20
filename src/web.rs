@@ -6,7 +6,7 @@ use crate::state::{App, Command, Phase, now_s};
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use axum::Router;
-use axum::extract::{Json, State};
+use axum::extract::{Json, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -59,6 +59,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/bluetooth/disconnect", post(bt_disconnect))
         .route("/api/bluetooth/forget", post(bt_forget))
         .route("/api/presence/pair", post(presence_pair))
+        .route("/api/spotify/{action}", post(spotify_ctrl))
         .with_state(app)
 }
 
@@ -227,6 +228,7 @@ async fn state(State(app): S, headers: HeaderMap) -> Response {
         "wifi": s.wifi,
         "bluetooth": s.bluetooth,
         "presence": s.presence,
+        "spotify": s.spotify,
         "triggers": s.triggers,
         "logs": s.logs.iter().rev().take(80).collect::<Vec<_>>(),
         "partner": s.partner,
@@ -788,4 +790,18 @@ mod tests {
         h.insert(header::COOKIE, "a=1; ida_speaker=abc; b=2".parse().unwrap());
         assert_eq!(token_from(&h).as_deref(), Some("abc"));
     }
+}
+
+/// Knöpfe auf der Website: Pause, Weiter, Lied vor/zurück.
+async fn spotify_ctrl(State(app): S, headers: HeaderMap, Path(action): Path<String>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let Some(c) = crate::spotify::Ctrl::parse(&action, None, "") else {
+        return err(StatusCode::BAD_REQUEST, "unbekannter Befehl");
+    };
+    if !app.music(c) {
+        return Json(json!({ "ok": false, "message": "Spotify ist aus." })).into_response();
+    }
+    Json(json!({ "ok": true })).into_response()
 }

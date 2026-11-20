@@ -78,6 +78,16 @@ Unter **Wake-Word → Zweiter Name für schnelle Befehle** trägst du ein zweite
 - Einstellbar sind der Name im Gespräch, die Stimme (z. B. Puck), eigene Anweisungen, Smart Home direkt und „Nur ein Befehl“. Schaltest du „Nur ein Befehl“ aus, ist es ein normales Gespräch mit anderem Namen und anderer Stimme.
 - Sagst du nach dem Namen nichts, legt sie nach ein paar Sekunden auf.
 
+## Spotify
+
+Der Lautsprecher ist ein Spotify-Connect-Gerät (über librespot, braucht Spotify Premium). Er taucht in der Spotify-App unter seinem Namen auf, z. B. „Nina Küche“.
+
+- **Einmal anmelden:** In der Spotify-App unten auf das Geräte-Symbol tippen und den Lautsprecher wählen. Danach meldet er sich nach jedem Neustart selbst wieder an.
+- **Beim Sprechen:** Sagst du den Namen, wird die Musik leiser, bis das Gespräch vorbei ist. Wie leise, stellst du unter **Audio → Spotify** ein. Der Echo-Filter rechnet die Musik heraus.
+- **Per Sprache:** „Pause“, „Weiter“, „Nächstes Lied“, „Leiser“ gehen sofort an genau diesen Lautsprecher. „Spiel Blinding Lights“ braucht zusätzlich die Spotify-Anmeldung in IDA (`SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET`, dann `<IDA>/api/v1/spotify/login`).
+- **Technik:** Die Spotify-App findet den Lautsprecher über avahi auf dem Pi (installiert `install.sh`). Die Anmeldung läuft über Port 8082. Host-Netzwerk braucht der Container nicht.
+- Laut den librespot-Machern ist diese Art Zugang von Spotify vermutlich nicht erlaubt. Viele nutzen es seit Jahren, ein Restrisiko bleibt.
+
 ## Benutzen
 
 - „Stella“ sagen (oder dein Wort). Ein kurzer Ton zeigt, dass sie zuhört, und sie meldet sich.

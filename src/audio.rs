@@ -182,6 +182,7 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
     {
         let mut p = app.playback.lock().unwrap();
         p.queue.clear();
+        p.music.clear();
         p.rate = out_rate;
         let buffer = if cfg.audio.buffer {
             cfg.audio.buffer_ms
@@ -502,6 +503,9 @@ where
     T: SizedSample + FromSample<f32>,
 {
     let ch = config.channels.max(1) as usize;
+    // Musik weich leiser/lauter (ca. 150 ms), damit es beim Wake-Word nicht knackt
+    let step = 1.0 / (config.sample_rate as f32 * 0.15).max(1.0);
+    let mut music_gain = 1.0f32;
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
@@ -509,8 +513,17 @@ where
             let mut played = Vec::with_capacity(data.len() / ch);
             {
                 let mut p = app.playback.lock().unwrap();
+                let duck = app.ducking.load(Ordering::Relaxed) || !p.queue.is_empty();
+                let target = if duck {
+                    app.duck_pct.load(Ordering::Relaxed).min(100) as f32 / 100.0
+                } else {
+                    1.0
+                };
                 for frame in data.chunks_mut(ch) {
-                    let v = (p.queue.pop_front().unwrap_or(0.0) * vol).clamp(-1.0, 1.0);
+                    music_gain = duck_step(music_gain, target, step);
+                    let music = p.music.pop_front().unwrap_or(0.0) * music_gain;
+                    let voice = p.queue.pop_front().unwrap_or(0.0);
+                    let v = ((voice + music) * vol).clamp(-1.0, 1.0);
                     played.push(v);
                     let s = T::from_sample(v);
                     frame.iter_mut().for_each(|x| *x = s);
@@ -526,6 +539,15 @@ where
         None,
     )?;
     Ok(stream)
+}
+
+/// Ein Sample näher an die Ziel-Lautstärke der Musik.
+fn duck_step(gain: f32, target: f32, step: f32) -> f32 {
+    if gain > target {
+        (gain - step).max(target)
+    } else {
+        (gain + step).min(target)
+    }
 }
 
 /// Rechnet Stellas 24-kHz-Stimme auf die Rate des Lautsprechers um.
@@ -604,6 +626,17 @@ mod tests {
             last = calib_step(&mut c, 50.0);
         }
         assert_eq!(last, Some(None));
+    }
+
+    #[test]
+    fn musik_wird_weich_leiser() {
+        let mut g = 1.0;
+        for _ in 0..5 {
+            g = duck_step(g, 0.15, 0.25);
+        }
+        assert_eq!(g, 0.15);
+        g = duck_step(g, 1.0, 0.25);
+        assert!((g - 0.4).abs() < 1e-6);
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub struct Config {
     pub assistant: Assistant,
     pub presence: Presence,
     pub quick: Quick,
+    pub spotify: Spotify,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -295,6 +296,27 @@ impl Default for Presence {
     }
 }
 
+/// Spotify Connect: der Lautsprecher erscheint in der Spotify-App als eigenes Gerät (librespot, braucht Premium).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Spotify {
+    pub enabled: bool,
+    /// Name in der Spotify-App (leer = Name des Lautsprechers, z. B. „Nina Küche“).
+    pub name: String,
+    /// So laut bleibt die Musik in Prozent, solange gesprochen wird (0 = ganz aus).
+    pub duck: u32,
+}
+
+impl Default for Spotify {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name: String::new(),
+            duck: 15,
+        }
+    }
+}
+
 /// WLAN über NetworkManager des Pi. Ohne Netz macht der Lautsprecher ein eigenes Einrichtungs-WLAN auf.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -449,6 +471,8 @@ impl Config {
         next.echo.delay_ms = next.echo.delay_ms.min(MAX_DELAY_MS);
         next.call.silence_end_s = next.call.silence_end_s.clamp(3, 120);
         next.call.max_minutes = next.call.max_minutes.clamp(1, 120);
+        next.spotify.name = next.spotify.name.trim().chars().take(48).collect();
+        next.spotify.duck = next.spotify.duck.min(100);
         Ok(next)
     }
 }

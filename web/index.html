@@ -65,7 +65,7 @@
   .logs { font: 12px/1.5 ui-monospace, monospace; color: var(--muted); max-height: 320px; overflow: auto; white-space: pre-wrap; }
   .msg { padding: 8px 12px; border-radius: 14px; margin-top: 10px; font-size: 14px; }
   .msg.ok { background: #31463a; color: #d6f5dd; } .msg.bad { background: #513534; color: #ffdad6; }
-  .talk p { margin: 6px 0; } .talk .user { color: var(--muted); }
+  .talk p { margin: 6px 0; } .talk .user { color: var(--muted); } .talk .time { color: var(--muted); font-size: 12px; margin-top: -2px; }
   .center { min-height: 70vh; display: grid; place-items: center; }
   .narrow { width: 100%; max-width: 380px; }
   ul.trig { list-style: none; margin: 0; padding: 0; } ul.trig li { padding: 6px 0; border-bottom: 1px solid var(--surface-high); font-size: 14px; }
@@ -213,7 +213,7 @@ function renderLive() {
   ].map(([k, v, d]) => `<div class="stat"><span><i class="dot ${d}"></i>${k}</span><b>${esc(v)}</b></div>`).join("") +
     (a.error ? `<div class="stat" style="grid-column:1/-1"><span>Audio-Fehler</span><b>${esc(a.error)}</b></div>` : "");
   const t = $("#talk");
-  if (t) t.innerHTML = S.conversation.length ? S.conversation.map(m => `<p class="${m.who === "user" ? "user" : ""}"><b>${m.who === "user" ? "Du" : esc(S.partner || "Stella")}:</b> ${esc(m.text)}</p>`).join("") : `<p class="sub">Noch nichts gesagt.</p>`;
+  if (t) t.innerHTML = S.conversation.length ? S.conversation.map(m => m.who === "timing" ? `<p class="time">⏱ ${esc(m.text)}</p>` : `<p class="${m.who === "user" ? "user" : ""}"><b>${m.who === "user" ? "Du" : esc(S.partner || "Stella")}:</b> ${esc(m.text)}</p>`).join("") : `<p class="sub">Noch nichts gesagt.</p>`;
   const tr = $("#trig");
   if (tr) tr.innerHTML = S.triggers.length ? S.triggers.map(x => `<li><span>${new Date(x.at * 1000).toLocaleString("de-DE")}</span>${esc(x.source)} – ${esc(x.result)}</li>`).join("") : `<li class="sub">Noch keine.</li>`;
   const lg = $("#logs"); if (lg) lg.textContent = S.logs.join("\n");
@@ -271,6 +271,7 @@ function audioTab() {
     ${toggle("audio.tones", "Signaltöne", "Ton beim Zuhören und am Ende des Gesprächs")}
     ${saveRow(`<button class="btn" data-act="/api/test/tone">Testton</button>`)}</div>
   ${btCard()}
+  ${spotifyCard()}
   <div class="card"><h2>Echo-Filter</h2>
     <p class="hint">Rechnet Stellas Stimme aus dem Mikrofon heraus, damit sie sich nicht selbst hört und du sie unterbrechen kannst.</p>
     ${toggle("echo.enabled", "Echo-Unterdrückung (WebRTC AEC3)")}
@@ -332,6 +333,22 @@ function presenceCard() {
     ${saveRow(`<button class="btn" id="phscan" ${btBusy ? "disabled" : ""}>${btBusy === "scan" ? "Suche … (10 s)" : "Handy suchen"}</button>`)}
     ${list}
     ${howto("So koppelst du dein Handy", ["Am Handy die Bluetooth-Einstellungen öffnen und offen lassen – nur dann ist es für andere sichtbar.", "Hier „Handy suchen“ drücken und bei deinem Handy „Das ist mein Handy“.", "Am Handy die Kopplung bestätigen. Fertig – Bluetooth am Handy einfach anlassen."])}</div>`;
+}
+function spotifyCard() {
+  const p = S.spotify || {}, c = S.config.spotify;
+  const state = !c.enabled ? `<i class="dot"></i>Aus.` :
+    p.connected ? `<i class="dot good"></i>Angemeldet${p.user ? " als " + esc(p.user) : ""}. In der Spotify-App heißt er „${esc(p.name)}“.` :
+    p.error ? `<i class="dot bad"></i>${esc(p.error)}` :
+    `<i class="dot warn"></i>Noch nicht angemeldet. Wähle in der Spotify-App einmal „${esc(p.name)}“ als Gerät.`;
+  const now = p.connected && p.track ? `<p>${p.playing ? "▶" : "⏸"} <b>${esc(p.track)}</b>${p.artist ? " – " + esc(p.artist) : ""}${p.volume != null ? ` <small class="sub">· Lautstärke ${p.volume} %</small>` : ""}</p>` : "";
+  return `<div class="card"><h2>Spotify</h2>
+    <p class="hint">Der Lautsprecher erscheint in der Spotify-App als eigenes Gerät (braucht Spotify Premium). Sagst du den Namen, wird die Musik leiser, bis das Gespräch vorbei ist. Der Echo-Filter rechnet die Musik heraus.</p>
+    <p>${state}</p>${now}
+    ${p.connected ? `<div class="row"><button class="btn" data-act="/api/spotify/prev">⏮</button><button class="btn" data-act="/api/spotify/toggle">${p.playing ? "Pause" : "Weiter"}</button><button class="btn" data-act="/api/spotify/next">⏭</button></div>` : ""}
+    ${toggle("spotify.enabled", "Spotify Connect an")}
+    ${field("spotify.name", "Name in der Spotify-App", "text", "Leer = Name des Lautsprechers.")}
+    ${range("spotify.duck", "Musik beim Sprechen", 0, 100, 5, v => v + " %")}
+    ${saveRow()}</div>`;
 }
 function btCard() {
   const b = S.bluetooth || {}, c = S.config.audio;

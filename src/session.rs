@@ -169,6 +169,54 @@ struct ServerMsg {
     reason: String,
     #[serde(default)]
     message: String,
+    // "music": Spotify steuern (action = play, pause, next, volume, load …)
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    value: Option<i64>,
+    #[serde(default)]
+    uri: String,
+    // "timing": Zeiten eines Befehls in ms, gemessen auf dem Server ab dem Ende deines Satzes
+    #[serde(default)]
+    pause_ms: u64,
+    #[serde(default)]
+    stt_ms: u64,
+    #[serde(default)]
+    wait_ms: u64,
+    #[serde(default)]
+    think_ms: u64,
+    #[serde(default)]
+    tts_ms: u64,
+    #[serde(default)]
+    first_ms: u64,
+}
+
+/// Sekunden mit Komma, z. B. 1234 ms -> "1,2 s".
+fn secs(ms: u64) -> String {
+    let tenths = (ms + 50) / 100;
+    format!("{},{} s", tenths / 10, tenths % 10)
+}
+
+/// Eine Zeile für die Website: wie lange jeder Schritt gedauert hat.
+fn timing_line(m: &ServerMsg, wake: Option<(u64, u64)>) -> String {
+    let mut parts = Vec::new();
+    if let Some((connect, answer)) = wake {
+        parts.push(format!("Name → verbunden {}", secs(connect)));
+        if answer > 0 {
+            parts.push(format!("Name → Antwort hörbar {}", secs(answer)));
+        }
+    }
+    parts.push(format!("Satzende abwarten {}", secs(m.pause_ms)));
+    parts.push(format!("Erkennung {}", secs(m.stt_ms)));
+    if m.wait_ms >= 50 {
+        parts.push(format!("Warteschlange {}", secs(m.wait_ms)));
+    }
+    parts.push(format!("KI {}", secs(m.think_ms)));
+    parts.push(format!("Stimme {}", secs(m.tts_ms)));
+    if m.first_ms > 0 {
+        parts.push(format!("Satzende → Antwort {}", secs(m.first_ms)));
+    }
+    parts.join(" · ")
 }
 
 /// Nimmt Befehle (Wake-Word, Knopf) entgegen und führt immer höchstens ein Gespräch.
@@ -177,6 +225,8 @@ pub async fn run(app: Arc<App>, mut commands: mpsc::UnboundedReceiver<Command>) 
         let Command::Start { source, quick, pre } = cmd else {
             continue;
         };
+        // Musik leiser, solange das Gespräch läuft
+        app.ducking.store(true, Ordering::Relaxed);
         let result = match talk(&app, &mut commands, quick, pre).await {
             Ok(r) => r,
             Err(e) => {
@@ -189,6 +239,7 @@ pub async fn run(app: Arc<App>, mut commands: mpsc::UnboundedReceiver<Command>) 
         };
         app.trigger(&source, &result);
         app.talking.store(false, Ordering::Relaxed);
+        app.ducking.store(false, Ordering::Relaxed);
         *app.mic.lock().unwrap() = None;
         app.set_phase(app.idle_phase());
         // Befehle, die während des Gesprächs auflaufen (z. B. doppelt erkanntes Wake-Word), verwerfen
@@ -203,6 +254,7 @@ async fn talk(
     pre: Vec<i16>,
 ) -> anyhow::Result<String> {
     let cfg = app.cfg();
+    let woke = Instant::now(); // Name erkannt
     app.set_phase(Phase::Connecting);
     if cfg.audio.tones {
         audio::beep(app, Beep::Listen);
@@ -252,6 +304,9 @@ async fn talk(
     }
     // Bis IDA „ready“ meldet, sammeln: zuerst das, was nach dem Namen schon gesagt wurde
     let mut ready = !quick;
+    let mut connected_ms = woke.elapsed().as_millis() as u64;
+    let mut first_audio: Option<u64> = None; // Name -> erste Antwort hörbar
+    let mut first_timing = true;
     let mut held: Vec<u8> = pre.iter().flat_map(|s| s.to_le_bytes()).collect();
     let mut last_activity = Instant::now();
     let mut voice = VoiceOut::new(app.output_rate());
@@ -279,6 +334,7 @@ async fn talk(
                 let Some(msg) = msg else { break };
                 match msg? {
                     Message::Binary(b) => {
+                        first_audio.get_or_insert_with(|| woke.elapsed().as_millis() as u64);
                         voice.push(app, &b);
                         last_activity = Instant::now();
                     }
@@ -287,6 +343,7 @@ async fn talk(
                         match m.kind.as_str() {
                             "ready" => {
                                 ready = true;
+                                connected_ms = woke.elapsed().as_millis() as u64;
                                 for c in std::mem::take(&mut held).chunks(1280) {
                                     tx.send(Message::binary(c.to_vec())).await?;
                                 }
@@ -294,6 +351,18 @@ async fn talk(
                             "text" => { app.said(&m.who, &m.text); last_activity = Instant::now(); }
                             "tool" => if m.running { app.log(format!("Werkzeug: {}", m.name)); last_activity = Instant::now(); },
                             "interrupted" => app.clear_playback(),
+                            "music" => {
+                                let msg = match crate::spotify::Ctrl::parse(&m.action, m.value, &m.uri) {
+                                    Some(c) if app.music(c) => format!("Musik: {}", m.action),
+                                    Some(_) => "Musik: Spotify läuft auf diesem Lautsprecher nicht".into(),
+                                    None => format!("Musik: unbekannter Befehl {}", m.action),
+                                };
+                                app.log(msg);
+                            }
+                            "timing" => {
+                                let wake = std::mem::take(&mut first_timing).then(|| (connected_ms, if quick { first_audio.unwrap_or(0) } else { 0 }));
+                                app.said("timing", &timing_line(&m, wake));
+                            }
                             "end" => {
                                 outcome = if m.reason.is_empty() { "aufgelegt".into() } else { m.reason };
                                 ending.get_or_insert_with(Instant::now);
@@ -387,6 +456,22 @@ mod tests {
         assert_eq!(q["smart_home"], true);
         cfg.quick.name = "Jarvis".into();
         assert_eq!(ticket_body(&cfg, true)["name"], "Jarvis");
+    }
+    #[test]
+    fn timing_shows_every_step() {
+        assert_eq!(secs(0), "0,0 s");
+        assert_eq!(secs(1249), "1,2 s");
+        assert_eq!(secs(1250), "1,3 s");
+        let m: ServerMsg = serde_json::from_str(
+            r#"{"type":"timing","pause_ms":500,"stt_ms":620,"wait_ms":0,"think_ms":1340,"tts_ms":280,"first_ms":2740}"#,
+        )
+        .unwrap();
+        let line = timing_line(&m, Some((400, 3900)));
+        assert_eq!(
+            line,
+            "Name → verbunden 0,4 s · Name → Antwort hörbar 3,9 s · Satzende abwarten 0,5 s · Erkennung 0,6 s · KI 1,3 s · Stimme 0,3 s · Satzende → Antwort 2,7 s"
+        );
+        assert!(!timing_line(&m, None).contains("Name"));
     }
 
     #[test]

@@ -90,6 +90,7 @@ pub struct Status {
     pub wifi: crate::wifi::Status,
     pub bluetooth: crate::bluetooth::Status,
     pub presence: crate::presence::Status,
+    pub spotify: crate::spotify::Status,
 }
 
 pub struct App {
@@ -117,6 +118,12 @@ pub struct App {
     pub learn: Mutex<Option<Learn>>,
     /// Laufende Messung der Lautsprecher-Verzögerung.
     pub calib: Mutex<Option<Calib>>,
+    /// Gespräch startet oder läuft: Musik leiser (vom Wake-Word bis zum Ende).
+    pub ducking: AtomicBool,
+    /// So laut bleibt die Musik beim Sprechen (Prozent, aus den Einstellungen).
+    pub duck_pct: AtomicU32,
+    /// Befehle an Spotify (Pause, Weiter, Lied laden …), solange Spotify läuft.
+    pub music: Mutex<Option<mpsc::UnboundedSender<crate::spotify::Ctrl>>>,
 }
 
 /// Kalibrierung: der Audio-Thread zählt 10-ms-Blöcke vom Messton im Referenzsignal bis zu ihm im Mikrofon.
@@ -142,7 +149,10 @@ pub struct Learn {
 
 #[derive(Default)]
 pub struct Playback {
+    /// Stimme und Signaltöne. Nur sie zählen für `playing()` (Wake-Word, Stille-Erkennung).
     pub queue: VecDeque<f32>,
+    /// Musik von Spotify, wird im Lautsprecher dazugemischt (beim Sprechen leiser).
+    pub music: VecDeque<f32>,
     pub rate: u32,
     /// Sekunden seit Epoche, bis zu denen „Stella spricht“ gilt (für Notfall-Modus und Stille-Erkennung).
     pub busy_until_ms: u64,
@@ -184,6 +194,7 @@ impl App {
                 wifi: Default::default(),
                 bluetooth: Default::default(),
                 presence: Default::default(),
+                spotify: Default::default(),
             }),
             sessions: Mutex::new(Default::default()),
             commands,
@@ -197,6 +208,9 @@ impl App {
             playback: Mutex::new(Playback::default()),
             learn: Mutex::new(None),
             calib: Mutex::new(None),
+            ducking: AtomicBool::new(false),
+            duck_pct: AtomicU32::new(15),
+            music: Mutex::new(None),
         })
     }
 
@@ -256,6 +270,15 @@ impl App {
         p.queue.extend(samples.iter().copied());
         let rate = p.rate.max(1) as u64;
         p.busy_until_ms = now_ms() + p.queue.len() as u64 * 1000 / rate + p.latency_ms + 300;
+    }
+
+    /// Schickt einen Befehl an Spotify. `false` = Spotify läuft gerade nicht.
+    pub fn music(&self, c: crate::spotify::Ctrl) -> bool {
+        self.music
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|tx| tx.send(c).is_ok())
     }
 
     pub fn clear_playback(&self) {

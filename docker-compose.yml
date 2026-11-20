@@ -7,6 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+      - "8082:8082"                # Spotify Connect: Anmeldung aus der Spotify-App
     devices:
       - /dev/snd:/dev/snd          # Mikrofon und Lautsprecher
       - /dev/net/tun:/dev/net/tun  # Cloudflare WARP
@@ -16,6 +17,7 @@ services:
       - NET_ADMIN                  # WARP richtet im Container eine Netzwerkschnittstelle ein
     sysctls:
       - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0  # Spotify-Anmeldung lauscht auf [::] (beide Protokolle)
     volumes:
       - ida-speaker:/data
       - warp:/var/lib/cloudflare-warp
