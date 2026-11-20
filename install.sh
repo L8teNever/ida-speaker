@@ -1,10 +1,24 @@
 #!/bin/sh
 # Ein Befehl für alles: curl -fsSL https://raw.githubusercontent.com/L8teNever/ida-speaker/main/install.sh | sh
 # Installiert Docker (falls nötig), richtet den Autostart ein und startet ida-speaker. Danach: http://<pi>:8080
+# Später nur updaten: ida-speaker-update  (oder: curl … | UPDATE=1 sh) – holt das neue Image und legt den Container neu an
 set -eu
 IMAGE="${IMAGE:-ghcr.io/l8tenever/ida-speaker:latest}"
 WIFI_COUNTRY="${WIFI_COUNTRY:-DE}"
+UPDATE="${UPDATE:-0}"
 SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO="sudo"
+
+if [ "$UPDATE" = "1" ]; then
+  command -v docker >/dev/null 2>&1 || { echo "» Docker fehlt – erst einmal ohne UPDATE=1 installieren."; exit 1; }
+  echo "» Suche Update für $IMAGE …"
+  $SUDO docker pull -q "$IMAGE" >/dev/null
+  new="$($SUDO docker image inspect -f '{{.Id}}' "$IMAGE")"
+  cur="$($SUDO docker inspect -f '{{.Image}}' ida-speaker 2>/dev/null || true)"
+  if [ "$new" = "$cur" ] && [ "$($SUDO docker inspect -f '{{.State.Running}}' ida-speaker 2>/dev/null)" = "true" ]; then
+    echo "Schon aktuell – nichts zu tun."
+    exit 0
+  fi
+else
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "» Docker fehlt – installiere es …"
@@ -35,8 +49,13 @@ if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
   echo "» Hinweis: NetworkManager läuft nicht – WLAN über die Website geht dann nicht (Raspberry Pi OS ab Bookworm hat ihn)."
 fi
 
+# Kurzer Update-Befehl für später
+printf '#!/bin/sh\n# Holt das neueste ida-speaker-Image und startet den Container damit neu (Einstellungen bleiben)\ncurl -fsSL https://raw.githubusercontent.com/L8teNever/ida-speaker/main/install.sh | UPDATE=1 sh\n' \
+  | $SUDO tee /usr/local/bin/ida-speaker-update >/dev/null && $SUDO chmod +x /usr/local/bin/ida-speaker-update || true
+
 echo "» Lade $IMAGE …"
 $SUDO docker pull "$IMAGE"
+fi
 $SUDO docker rm -f ida-speaker >/dev/null 2>&1 || true
 $SUDO docker run -d --name ida-speaker --restart unless-stopped \
   --device /dev/snd --device /dev/net/tun --cap-add NET_ADMIN \
@@ -50,6 +69,12 @@ $SUDO docker run -d --name ida-speaker --restart unless-stopped \
 
 ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo ""
+if [ "$UPDATE" = "1" ]; then
+  $SUDO docker image prune -f >/dev/null 2>&1 || true
+  echo "Update fertig. Website neu laden: http://${ip:-<pi>}:8080"
+  exit 0
+fi
 echo "Fertig. ida-speaker startet ab jetzt bei jedem Booten von selbst."
+echo "Update später: ida-speaker-update"
 echo "Einstellungen: http://${ip:-<pi>}:8080  oder  http://$(hostname).local:8080"
 echo "Ohne Netz öffnet der Pi nach ~90 s das WLAN „IDA-Speaker-Setup“ (Passwort: idaspeaker) → http://10.42.0.1:8080"

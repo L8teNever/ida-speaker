@@ -47,7 +47,7 @@ Dann `http://<pi>:8080` oder `http://<hostname>.local:8080` öffnen. Beim ersten
 
 Alle Änderungen gelten sofort, ein Neustart ist nicht nötig. Die Einstellungen liegen nur auf dem Pi (`/data/config.toml` im Volume), nie im Repo.
 
-**Update:** `docker pull ghcr.io/l8tenever/ida-speaker:latest`, danach den Container neu erstellen (mit Compose: `docker compose pull && docker compose up -d`). Die Einstellungen bleiben erhalten.
+**Update:** auf dem Pi einfach `ida-speaker-update` ausführen (legt `install.sh` an). Das holt das neue Image und legt den Container damit neu an, ohne neue Einrichtung – die Einstellungen bleiben erhalten. Ohne den Befehl geht dasselbe mit `curl -fsSL https://raw.githubusercontent.com/L8teNever/ida-speaker/main/install.sh | UPDATE=1 sh`. Nur `docker restart` reicht nicht, der Container läuft dann weiter mit dem alten Image. Mit Compose: `docker compose pull && docker compose up -d`.
 
 ## Bluetooth-Box
 
