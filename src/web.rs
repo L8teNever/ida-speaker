@@ -772,6 +772,20 @@ async fn presence_pair(State(app): S, headers: HeaderMap, Json(d): Json<BtDevice
     Json(json!({ "ok": true, "message": format!("„{name}“ ist jetzt dein Handy. Ist es weg, hört der Lautsprecher nicht auf das Wake-Word.") })).into_response()
 }
 
+/// Knöpfe auf der Website: Pause, Weiter, Lied vor/zurück.
+async fn spotify_ctrl(State(app): S, headers: HeaderMap, Path(action): Path<String>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let Some(c) = crate::spotify::Ctrl::parse(&action, None, "") else {
+        return err(StatusCode::BAD_REQUEST, "unbekannter Befehl");
+    };
+    if !app.music(c) {
+        return Json(json!({ "ok": false, "message": "Spotify ist aus." })).into_response();
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,16 +806,3 @@ mod tests {
     }
 }
 
-/// Knöpfe auf der Website: Pause, Weiter, Lied vor/zurück.
-async fn spotify_ctrl(State(app): S, headers: HeaderMap, Path(action): Path<String>) -> Response {
-    if let Err(r) = guard(&app, &headers) {
-        return r;
-    }
-    let Some(c) = crate::spotify::Ctrl::parse(&action, None, "") else {
-        return err(StatusCode::BAD_REQUEST, "unbekannter Befehl");
-    };
-    if !app.music(c) {
-        return Json(json!({ "ok": false, "message": "Spotify ist aus." })).into_response();
-    }
-    Json(json!({ "ok": true })).into_response()
-}
