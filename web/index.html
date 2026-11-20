@@ -256,6 +256,7 @@ function audioTab() {
     <label>Mikrofon-Pegel</label><div class="meter"><i></i></div>
     ${toggle("audio.tones", "Signaltöne", "Ton beim Zuhören und am Ende des Gesprächs")}
     ${saveRow(`<button class="btn" data-act="/api/test/tone">Testton</button>`)}</div>
+  ${btCard()}
   <div class="card"><h2>Echo-Filter</h2>
     <p class="hint">Rechnet Stellas Stimme aus dem Mikrofon heraus, damit sie sich nicht selbst hört und du sie unterbrechen kannst.</p>
     ${toggle("echo.enabled", "Echo-Unterdrückung (WebRTC AEC3)")}
@@ -283,6 +284,27 @@ function wakeTab() {
     <label>Zuletzt gehört</label><div id="heard" class="sub">–</div>
     ${saveRow()}</div>`;
 }
+let btList = null, btBusy = "";
+function btCard() {
+  const b = S.bluetooth || {}, c = S.config.audio;
+  if (!b.available) return `<div class="card"><h2>Bluetooth-Lautsprecher</h2><p class="sub">${esc(b.error || "Bluetooth wird geprüft …")}</p></div>`;
+  const list = btList === null ? "" : btList.length ? `<ul class="trig">${btList.map((d, i) => `<li style="display:flex;align-items:center;gap:10px"><span style="flex:1;font-size:14px;color:var(--on-surface)">${esc(d.name)}${d.audio ? "" : ` <small class="sub">(kein Lautsprecher?)</small>`}<br><small class="sub">${esc(d.mac)}${d.connected ? " · verbunden" : d.paired ? " · gekoppelt" : ""}</small></span>
+      ${d.mac === c.bluetooth && d.connected ? `<button class="btn" data-btoff="${i}">Trennen</button>` : `<button class="btn primary" data-bton="${i}">${d.paired ? "Verbinden" : "Koppeln"}</button>`}
+      ${d.paired ? `<button class="btn" data-btforget="${i}">Vergessen</button>` : ""}</li>`).join("")}</ul>` : `<p class="sub">Nichts gefunden. Ist die Box an und im Kopplungsmodus?</p>`;
+  return `<div class="card"><h2>Bluetooth-Lautsprecher</h2>
+    <p class="hint">Stella spricht dann über die Box. Das Mikrofon bleibt das am Pi. Der Echo-Filter gleicht die Bluetooth-Verzögerung selbst aus; hört sie sich trotzdem, hilft unter Echo-Filter der Notfall-Modus.</p>
+    <p>${c.bluetooth ? `<i class="dot ${b.connected ? "good" : "warn"}"></i>${esc(c.bluetooth_name || c.bluetooth)} – ${b.connected ? "verbunden, Ausgabe läuft darüber" : "nicht verbunden, Ausgabe läuft über das Standardgerät (verbindet sich von selbst, sobald die Box an ist)"}` : `<i class="dot"></i>Keine Box gewählt.`}</p>
+    ${list}
+    <div class="row"><button class="btn" id="btscan" ${btBusy ? "disabled" : ""}>${btBusy === "scan" ? "Suche … (10 s)" : "Geräte suchen"}</button></div><div class="out"></div>
+    ${howto("So koppelst du eine Box", ["Box einschalten und in den Kopplungsmodus bringen (meist die Bluetooth-Taste lang drücken, bis es blinkt).", "„Geräte suchen“ drücken und bei deiner Box auf „Koppeln“.", "Fertig – mit „Testton“ oben prüfen. Nach einem Neustart verbindet sich die Box von selbst wieder."])}</div>`;
+}
+async function btAction(btn, path, d) {
+  const out = $(".out", btn.closest(".card"));
+  btn.disabled = true; out.innerHTML = `<div class="msg ok">${path.endsWith("connect") ? "Kopple und verbinde … (bis zu einer Minute)" : "Einen Moment …"}</div>`;
+  try { const r = await api(path, { mac: d.mac, name: d.name }); await refresh(); if (btList) btList = (await api("/api/bluetooth/scan", {})).devices; render(); const o = $(".out", $("#btscan").closest(".card")); if (o) o.innerHTML = `<div class="msg ${r.ok ? "ok" : "bad"}">${esc(r.message)}</div>`; }
+  catch (e) { out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; btn.disabled = false; }
+}
+
 let wifiData = null;
 function wifiTab() {
   const w = wifiData;
@@ -400,7 +422,8 @@ function wzSteps() {
           ${range("audio.volume", "Lautstärke", 0, 200, 5, fmts.pct)}
           <label>Mikrofon-Pegel (sprich etwas)</label><div class="meter"><i></i></div>
           <div class="row"><button class="btn" data-act="/api/test/tone">Testton</button></div><div class="out"></div>
-          <p class="hint" style="margin-top:12px">Geräte ändern gilt nach „Weiter“. Bei USB-Geräten passt meist der Eintrag mit <code>plughw</code> oder dem Gerätenamen.</p>`; } },
+          <p class="hint" style="margin-top:12px">Geräte ändern gilt nach „Weiter“. Bei USB-Geräten passt meist der Eintrag mit <code>plughw</code> oder dem Gerätenamen.</p>
+          ${btCard()}`; } },
     { t: "Wake-Word", body: () => `${field("wake.word", "Wort, auf das er hört")}
         ${range("wake.sensitivity", "Empfindlichkeit", 0, 1, 0.05, fmts.sens)}
         <label>Zuletzt gehört</label><div id="heard" class="sub">–</div>
@@ -458,6 +481,10 @@ async function render() {
   const rs = $("#rescan"); if (rs) rs.onclick = () => { wifiData = null; render(); loadWifi(); };
   const ca = $("#cfauto"); if (ca) ca.onclick = () => cfAuto(ca, {});
   const wc = $("#wzcf"); if (wc) wc.onclick = () => { cfPick.mode = wc.dataset.mode; cfAuto(wc, {}); };
+  const bs = $("#btscan"); if (bs) bs.onclick = async () => { btBusy = "scan"; render(); try { const r = await api("/api/bluetooth/scan", {}); btList = r.devices; if (!r.ok) setTimeout(() => { const o = $(".out", $("#btscan").closest(".card")); if (o) o.innerHTML = `<div class="msg bad">${esc(r.message)}</div>`; }); } catch (e) { btList = []; } btBusy = ""; render(); };
+  document.querySelectorAll("[data-bton]").forEach(b => b.onclick = () => btAction(b, "/api/bluetooth/connect", btList[b.dataset.bton]));
+  document.querySelectorAll("[data-btoff]").forEach(b => b.onclick = () => btAction(b, "/api/bluetooth/disconnect", btList[b.dataset.btoff]));
+  document.querySelectorAll("[data-btforget]").forEach(b => b.onclick = () => btAction(b, "/api/bluetooth/forget", btList[b.dataset.btforget]));
   const wn = $("#wznext"); if (wn) wn.onclick = () => wzNext(1);
   const wb = $("#wzback"); if (wb) wb.onclick = () => wzNext(-1);
   document.querySelectorAll("input[name=via]").forEach(r => r.onchange = () => { $("[data-k='ida.via']").value = r.value; S.config.ida.via = r.value; const u = $("[data-k='ida.url']"); const cur = u.value; render(); $("[data-k='ida.url']").value = cur; });

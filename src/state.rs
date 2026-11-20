@@ -69,6 +69,7 @@ pub struct Status {
     pub audio: AudioInfo,
     pub last_text: VecDeque<(String, String)>,
     pub wifi: crate::wifi::Status,
+    pub bluetooth: crate::bluetooth::Status,
 }
 
 pub struct App {
@@ -82,6 +83,8 @@ pub struct App {
     pub muted: AtomicBool,
     /// Letzter angemeldeter Seitenaufruf (Sekunden), damit der WLAN-Wächter den Hotspot nicht unter dir wegzieht.
     pub last_web: AtomicU64,
+    /// Audio neu aufbauen (z. B. Bluetooth-Lautsprecher kam oder ging).
+    pub rebuild_audio: AtomicBool,
     /// Gespräch läuft: Mikrofon geht an IDA statt ans Wake-Word.
     pub talking: AtomicBool,
     /// Mikrofon-Audio für das laufende Gespräch (16 kHz, i16).
@@ -129,12 +132,14 @@ impl App {
                 audio: AudioInfo::default(),
                 last_text: VecDeque::new(),
                 wifi: Default::default(),
+                bluetooth: Default::default(),
             }),
             sessions: Mutex::new(Default::default()),
             commands,
             level: AtomicU32::new(0),
             muted: AtomicBool::new(false),
             last_web: AtomicU64::new(0),
+            rebuild_audio: AtomicBool::new(false),
             talking: AtomicBool::new(false),
             mic: Mutex::new(None),
             playback: Mutex::new(Playback::default()),

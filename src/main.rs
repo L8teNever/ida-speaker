@@ -3,6 +3,7 @@
 //! mit Echo-Filter, damit Stella sich nicht selbst hört. Eingestellt wird alles über die Website (Port 8080).
 
 mod audio;
+mod bluetooth;
 mod cloudflare;
 mod config;
 mod dsp;
@@ -36,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(session::run(app.clone(), cmd_rx));
     tokio::spawn(warp::run(app.clone()));
     tokio::spawn(wifi::run(app.clone()));
+    tokio::spawn(bluetooth::run(app.clone()));
 
     let port: u16 = std::env::var("PORT")
         .ok()

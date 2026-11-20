@@ -18,7 +18,7 @@ Pi (ein Container)
 ## Was du brauchst
 
 - Raspberry Pi 4 oder 5 mit 64-Bit-Raspberry-Pi-OS (oder ein anderes arm64-/amd64-Linux)
-- USB-Mikrofon und Lautsprecher, oder eine USB-Freisprecheinrichtung. Der Echo-Filter läuft in Software, deshalb reicht einfache Hardware. Stell Mikrofon und Lautsprecher am besten nicht direkt nebeneinander.
+- USB-Mikrofon und Lautsprecher, oder eine USB-Freisprecheinrichtung. Als Lautsprecher geht auch eine **Bluetooth-Box**, die du auf der Website koppelst. Der Echo-Filter läuft in Software, deshalb reicht einfache Hardware. Stell Mikrofon und Lautsprecher am besten nicht direkt nebeneinander.
 - Docker
 - IDA mit eingerichtetem Voice-Dienst (`VOICE_URL`, `VOICE_SECRET`)
 
@@ -49,6 +49,16 @@ Alle Änderungen gelten sofort, ein Neustart ist nicht nötig. Die Einstellungen
 
 **Update:** `docker pull ghcr.io/l8tenever/ida-speaker:latest`, danach den Container neu erstellen (mit Compose: `docker compose pull && docker compose up -d`). Die Einstellungen bleiben erhalten.
 
+## Bluetooth-Box
+
+Unter **Audio → Bluetooth-Lautsprecher** drückst du „Geräte suchen“ und dann bei deiner Box „Koppeln“. Danach spricht Stella über die Box.
+
+- Nach einem Neustart oder wenn die Box wieder angeht, verbindet sie sich von selbst.
+- Ist die Box aus, läuft die Ausgabe über das normale Gerät.
+- Das Mikrofon bleibt das am Pi.
+
+Technisch läuft das über BlueZ und bluez-alsa auf dem Pi, beides richtet `install.sh` ein. Am besten nimmst du Raspberry Pi OS **Lite**. Auf der Desktop-Version übernimmt PipeWire Bluetooth.
+
 ## Benutzen
 
 - „Stella“ sagen (oder dein Wort). Ein kurzer Ton zeigt, dass sie zuhört, und sie meldet sich.
@@ -61,7 +71,7 @@ Alle Änderungen gelten sofort, ein Neustart ist nicht nötig. Die Einstellungen
 | Bereich | Was |
 |---|---|
 | Wake-Word | Wort oder Phrase, Empfindlichkeit, an/aus, „Zuletzt gehört“ zum Testen |
-| Audio | Geräte, Lautstärke, Mikrofon-Verstärkung, Signaltöne, Testton, Pegelanzeige |
+| Audio | Geräte, Lautstärke, Mikrofon-Verstärkung, Signaltöne, Testton, Pegelanzeige, **Bluetooth-Box** suchen, koppeln, verbinden |
 | Echo-Filter | Echo-Unterdrückung, Rauschunterdrückung, automatische Lautstärke, Notfall-Modus (Mikrofon stumm, solange Stella spricht) |
 | Gespräch | Auflegen nach Stille, Höchstdauer, Sprach-Schwelle |
 | IDA | Adresse, Gerätename, Schlüssel, Verbindungstest |

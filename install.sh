@@ -18,6 +18,19 @@ if command -v raspi-config >/dev/null 2>&1; then
   $SUDO raspi-config nonint do_wifi_country "$WIFI_COUNTRY" >/dev/null 2>&1 || true
 fi
 command -v rfkill >/dev/null 2>&1 && $SUDO rfkill unblock wifi 2>/dev/null || true
+# Bluetooth-Lautsprecher: BlueZ und bluez-alsa auf dem Pi (der Container steuert sie über D-Bus)
+if command -v apt-get >/dev/null 2>&1; then
+  if systemctl is-active --quiet pipewire 2>/dev/null || pgrep -x pipewire >/dev/null 2>&1; then
+    echo "» Hinweis: PipeWire läuft (Desktop-System) – Bluetooth-Lautsprecher dann besser mit Raspberry Pi OS Lite."
+  else
+    echo "» Richte Bluetooth ein (bluez, bluez-alsa) …"
+    $SUDO apt-get update -q >/dev/null 2>&1 || true
+    $SUDO apt-get install -y -q bluez bluez-alsa-utils >/dev/null 2>&1 || echo "» Bluetooth-Pakete ließen sich nicht installieren – Bluetooth-Lautsprecher gehen dann nicht."
+    $SUDO systemctl enable --now bluetooth >/dev/null 2>&1 || true
+    $SUDO systemctl enable --now bluealsa >/dev/null 2>&1 || true
+    command -v rfkill >/dev/null 2>&1 && $SUDO rfkill unblock bluetooth 2>/dev/null || true
+  fi
+fi
 if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
   echo "» Hinweis: NetworkManager läuft nicht – WLAN über die Website geht dann nicht (Raspberry Pi OS ab Bookworm hat ihn)."
 fi

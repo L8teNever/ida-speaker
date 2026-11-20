@@ -285,6 +285,12 @@ pub fn app_covers(domain: &str, host: &str) -> bool {
     host_ok && (path.is_empty() || "/device/ticket".starts_with(path) || "/live".starts_with(path))
 }
 
+/// App lässt ohnehin alle durch (nur Bypass-Policies) – dort braucht es keinen Service-Token.
+pub fn bypass_only(app: &Value) -> bool {
+    let p = app["policies"].as_array().cloned().unwrap_or_default();
+    !p.is_empty() && p.iter().all(|x| x["decision"] == "bypass")
+}
+
 /// Über die Domain: Service-Token für die Access-App(s), die die Voice-Domain schützen.
 async fn domain(app: &Arc<App>, cf: &Cf, a: &str, r: &mut Report) -> anyhow::Result<()> {
     let cfg = app.cfg();
@@ -299,7 +305,9 @@ async fn domain(app: &Arc<App>, cf: &Cf, a: &str, r: &mut Report) -> anyhow::Res
         .await?
         .into_iter()
         .filter(|x| {
-            x["type"] == "self_hosted" && app_domains(x).iter().any(|d| app_covers(d, &host))
+            x["type"] == "self_hosted"
+                && app_domains(x).iter().any(|d| app_covers(d, &host))
+                && !bypass_only(x)
         })
         .collect();
     let mut next = cfg.clone();

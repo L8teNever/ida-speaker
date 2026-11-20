@@ -47,6 +47,11 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/wifi/connect", post(wifi_connect))
         .route("/api/wifi/forget", post(wifi_forget))
         .route("/api/cloudflare/auto", post(cloudflare_auto))
+        .route("/api/bluetooth", get(bt_status))
+        .route("/api/bluetooth/scan", post(bt_scan))
+        .route("/api/bluetooth/connect", post(bt_connect))
+        .route("/api/bluetooth/disconnect", post(bt_disconnect))
+        .route("/api/bluetooth/forget", post(bt_forget))
         .with_state(app)
 }
 
@@ -213,6 +218,7 @@ async fn state(State(app): S, headers: HeaderMap) -> Response {
         "audio": s.audio,
         "warp": s.warp,
         "wifi": s.wifi,
+        "bluetooth": s.bluetooth,
         "triggers": s.triggers,
         "logs": s.logs.iter().rev().take(80).collect::<Vec<_>>(),
         "conversation": s.last_text.iter().map(|(w, t)| json!({"who": w, "text": t})).collect::<Vec<_>>(),
@@ -449,6 +455,123 @@ async fn cloudflare_auto(
         return r;
     }
     Json(crate::cloudflare::auto(&app, req).await).into_response()
+}
+
+async fn bt_status(State(app): S, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let ok = crate::bluetooth::available().await;
+    let status = {
+        let mut s = app.status.lock().unwrap();
+        s.bluetooth.available = ok.is_ok();
+        s.bluetooth.error = ok.clone().err().unwrap_or_default();
+        s.bluetooth.clone()
+    };
+    Json(json!({ "status": status })).into_response()
+}
+
+async fn bt_scan(State(app): S, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    if let Err(e) = crate::bluetooth::available().await {
+        return Json(json!({ "ok": false, "message": e, "devices": [] })).into_response();
+    }
+    match crate::bluetooth::scan(10).await {
+        Ok(d) => Json(json!({ "ok": true, "devices": d })).into_response(),
+        Err(e) => {
+            Json(json!({ "ok": false, "message": format!("{e:#}"), "devices": [] })).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct BtDevice {
+    mac: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[allow(clippy::result_large_err)]
+fn bt_mac(d: &BtDevice) -> Result<String, Response> {
+    let mac = d.mac.trim().to_uppercase();
+    if crate::bluetooth::valid_mac(&mac) {
+        Ok(mac)
+    } else {
+        Err(err(StatusCode::BAD_REQUEST, "Ungültige Bluetooth-Adresse"))
+    }
+}
+
+async fn bt_connect(State(app): S, headers: HeaderMap, Json(d): Json<BtDevice>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let mac = match bt_mac(&d) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    app.log(format!("Bluetooth: verbinde „{}“", d.name));
+    if let Err(e) = crate::bluetooth::pair_connect(&mac).await {
+        app.log(format!("Bluetooth: {e:#}"));
+        return Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response();
+    }
+    let name = if d.name.trim().is_empty() {
+        crate::bluetooth::info(&mac).await.name
+    } else {
+        d.name.trim().to_string()
+    };
+    crate::bluetooth::write_asoundrc(&mac, &name);
+    app.status.lock().unwrap().bluetooth.connected = true;
+    let mut next = app.cfg();
+    next.audio.bluetooth = mac;
+    next.audio.bluetooth_name = name.clone();
+    next.audio.output = crate::bluetooth::OUTPUT_ID.into();
+    if let Err(e) = app.save_config(next) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+    app.rebuild_audio.store(true, Ordering::Relaxed);
+    Json(json!({ "ok": true, "message": format!("„{name}“ verbunden – Stella spricht jetzt darüber. Mit „Testton“ prüfen.") })).into_response()
+}
+
+async fn bt_disconnect(State(app): S, headers: HeaderMap, Json(d): Json<BtDevice>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let mac = match bt_mac(&d) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match crate::bluetooth::disconnect(&mac).await {
+        Ok(()) => Json(json!({ "ok": true, "message": "Getrennt" })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response(),
+    }
+}
+
+/// Vergessen: entkoppeln; war es der gewählte Lautsprecher, wieder über das normale Gerät spielen.
+async fn bt_forget(State(app): S, headers: HeaderMap, Json(d): Json<BtDevice>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let mac = match bt_mac(&d) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let res = crate::bluetooth::remove(&mac).await;
+    let mut next = app.cfg();
+    if next.audio.bluetooth == mac {
+        next.audio.bluetooth.clear();
+        next.audio.bluetooth_name.clear();
+        if next.audio.output == crate::bluetooth::OUTPUT_ID {
+            next.audio.output.clear();
+        }
+        crate::bluetooth::write_asoundrc("", "");
+        let _ = app.save_config(next);
+    }
+    match res {
+        Ok(()) => Json(json!({ "ok": true, "message": "Vergessen" })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response(),
+    }
 }
 
 #[cfg(test)]

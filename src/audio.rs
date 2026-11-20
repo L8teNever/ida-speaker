@@ -97,10 +97,11 @@ pub fn spawn(app: Arc<App>) {
 }
 
 /// Teile der Einstellungen, deren Änderung Streams oder Filter neu aufbaut.
-fn rebuild_key(c: &Config) -> (String, String, crate::config::Echo) {
+fn rebuild_key(c: &Config) -> (String, String, String, crate::config::Echo) {
     (
         c.audio.input.clone(),
         c.audio.output.clone(),
+        c.audio.bluetooth.clone(),
         c.echo.clone(),
     )
 }
@@ -111,16 +112,48 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
     let host = cpal::default_host();
     let input = pick(&host, &cfg.audio.input, true)
         .ok_or_else(|| anyhow::anyhow!("kein Mikrofon gefunden"))?;
-    let output = pick(&host, &cfg.audio.output, false)
+    let mut output = pick(&host, &cfg.audio.output, false)
         .ok_or_else(|| anyhow::anyhow!("kein Lautsprecher gefunden"))?;
+    // Bluetooth-Box gewählt, aber gerade nicht da: über das Standardgerät spielen, bis sie wieder verbunden ist
+    let bt = cfg.audio.output == crate::bluetooth::OUTPUT_ID;
+    if bt
+        && !app.status.lock().unwrap().bluetooth.connected
+        && let Some(d) = host.default_output_device()
+    {
+        output = d;
+    }
 
     let in_cfg = input.default_input_config()?;
-    let out_cfg = output.default_output_config()?;
     let in_rate = in_cfg.sample_rate();
-    let out_rate = out_cfg.sample_rate();
-
     let volume = Arc::new(AtomicU32::new(cfg.audio.volume));
     let reference: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let open = |dev: cpal::Device| -> anyhow::Result<(cpal::Device, u32, cpal::Stream)> {
+        let c = dev.default_output_config()?;
+        let rate = c.sample_rate();
+        let stream = build_output(
+            &dev,
+            c.sample_format(),
+            c.into(),
+            app.clone(),
+            volume.clone(),
+            reference.clone(),
+        )?;
+        Ok((dev, rate, stream))
+    };
+    // Bluetooth-Box lässt sich nicht öffnen (bluez-alsa fehlt, Box weg …): über das Standardgerät spielen
+    let (output, out_rate, out_stream) = match open(output) {
+        Ok(x) => x,
+        Err(e) if bt => {
+            app.log(format!(
+                "Bluetooth-Lautsprecher lässt sich nicht öffnen ({e:#}) – nehme das Standardgerät"
+            ));
+            open(
+                host.default_output_device()
+                    .ok_or_else(|| anyhow::anyhow!("kein Lautsprecher gefunden"))?,
+            )?
+        }
+        Err(e) => return Err(e),
+    };
     {
         let mut p = app.playback.lock().unwrap();
         p.queue.clear();
@@ -129,14 +162,6 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
 
     let (tx, rx) = mpsc::sync_channel::<Vec<f32>>(64);
     let in_stream = build_input(&input, in_cfg.sample_format(), in_cfg.into(), tx)?;
-    let out_stream = build_output(
-        &output,
-        out_cfg.sample_format(),
-        out_cfg.into(),
-        app.clone(),
-        volume.clone(),
-        reference.clone(),
-    )?;
     in_stream.play()?;
     out_stream.play()?;
 
@@ -185,6 +210,9 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
     let mut frames = 0u32;
 
     loop {
+        if app.rebuild_audio.swap(false, Ordering::Relaxed) {
+            return Ok(());
+        }
         if cfg_rx.has_changed().unwrap_or(false) {
             let next = cfg_rx.borrow_and_update().clone();
             if rebuild_key(&next) != key {

@@ -55,6 +55,9 @@ pub struct Audio {
     pub mic_gain: u32,
     /// Signaltöne beim Zuhören und am Gesprächsende.
     pub tones: bool,
+    /// Gewählter Bluetooth-Lautsprecher (MAC) und sein Name; Ausgabe läuft dann über `alsa:ida_bluetooth`.
+    pub bluetooth: String,
+    pub bluetooth_name: String,
 }
 
 impl Default for Audio {
@@ -65,6 +68,8 @@ impl Default for Audio {
             volume: 100,
             mic_gain: 100,
             tones: true,
+            bluetooth: String::new(),
+            bluetooth_name: String::new(),
         }
     }
 }

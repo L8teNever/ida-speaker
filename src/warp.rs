@@ -9,6 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::{Child, Command};
 
+/// WARP nutzt den D-Bus im Container, nicht den des Pi.
+const OWN_BUS: &str = "unix:path=/run/dbus/system_bus_socket";
+
 fn mdm_path() -> PathBuf {
     std::env::var_os("WARP_MDM")
         .map(PathBuf::from)
@@ -47,6 +50,7 @@ fn which(bin: &str) -> bool {
 
 async fn cli(args: &[&str]) -> String {
     match Command::new("warp-cli")
+        .env("DBUS_SYSTEM_BUS_ADDRESS", OWN_BUS)
         .arg("--accept-tos")
         .args(args)
         .stdin(Stdio::null())
@@ -129,6 +133,7 @@ pub async fn run(app: Arc<App>) {
                     "WARP neu gestartet"
                 });
                 child = Command::new("warp-svc")
+                    .env("DBUS_SYSTEM_BUS_ADDRESS", OWN_BUS)
                     .arg("--accept-tos")
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
