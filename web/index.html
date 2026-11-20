@@ -40,6 +40,9 @@
     border-radius: 12px; padding: 10px 12px; font: inherit; }
   textarea { resize: vertical; min-height: 110px; line-height: 1.4; }
   input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .pwwrap { position: relative; }
+  .pwwrap input { padding-right: 86px; }
+  .pwwrap .eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: transparent; color: var(--accent); border: 0; font: inherit; font-size: 13px; padding: 6px 8px; cursor: pointer; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
   .btn { background: var(--surface-highest); color: var(--on-surface); border: 0; border-radius: 99px; padding: 10px 16px; font: inherit; cursor: pointer; }
@@ -108,6 +111,7 @@ function authScreen(setup, error = "") {
   };
   $("#go").onclick = go;
   document.querySelectorAll("input").forEach(i => i.onkeydown = e => e.key === "Enter" && go());
+  addEyes();
 }
 
 async function boot() {
@@ -491,6 +495,17 @@ async function wzNext(dir) {
 }
 
 const TABS = { setup: ["Einrichtung", setupTab], status: ["Status", statusTab], wake: ["Wake-Word", wakeTab], audio: ["Audio", audioTab], ida: ["IDA", idaTab], cloud: ["Cloudflare", cloudTab], wifi: ["WLAN", wifiTab], system: ["System", systemTab] };
+// Passwortfelder: Augen-Knopf zum Anzeigen, damit man sieht, was man tippt
+function addEyes(root = document) {
+  root.querySelectorAll("input[type=password]:not([data-eye])").forEach(i => {
+    i.dataset.eye = "1";
+    const wrap = document.createElement("div"); wrap.className = "pwwrap";
+    i.parentNode.insertBefore(wrap, i); wrap.appendChild(i);
+    const b = document.createElement("button"); b.type = "button"; b.className = "eye"; b.textContent = "Zeigen"; b.tabIndex = -1;
+    b.onclick = () => { const show = i.type === "password"; i.type = show ? "text" : "password"; b.textContent = show ? "Verbergen" : "Zeigen"; i.focus(); };
+    wrap.appendChild(b);
+  });
+}
 async function render() {
   if (tab === "audio" && !devices) { try { devices = await api("/api/devices"); } catch { devices = { inputs: [], outputs: [] }; } }
   $("#app").innerHTML = `<header><div class="orb ${S.phase}"></div><div><h1>IDA Speaker</h1><div class="sub" id="phase">${PHASE[S.phase] || ""}</div></div></header>
@@ -502,12 +517,22 @@ async function render() {
   });
   document.querySelectorAll("[data-wifi]").forEach(b => b.onclick = () => {
     const n = wifiData.networks[b.dataset.wifi];
-    const go = async pw => { const out = $(".out", b.closest(".card")); out.innerHTML = `<div class="msg ok">Verbinde mit ${esc(n.ssid)} …</div>`;
-      try { const r = await api("/api/wifi/connect", { ssid: n.ssid, password: pw }); out.innerHTML = `<div class="msg ${r.ok ? "ok" : "bad"}">${esc(r.message)}</div>`; if (r.ok) setTimeout(loadWifi, 4000); }
-      catch (e) { out.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; } };
+    const out = () => $(".out", b.closest(".card"));
+    const ask = (msg = "") => {
+      $("#wifipw").innerHTML = `<label>Passwort für „${esc(n.ssid)}“</label><input type="password" id="wpw" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><div class="row"><button class="btn primary" id="wgo">Verbinden</button></div>${msg ? `<div class="msg bad">${esc(msg)}</div>` : ""}`;
+      addEyes($("#wifipw"));
+      const send = () => { const pw = $("#wpw").value; if (!pw) { $("#wpw").focus(); return; } go(pw); };
+      $("#wpw").focus(); $("#wgo").onclick = send; $("#wpw").onkeydown = e => e.key === "Enter" && send();
+    };
+    const go = async pw => { out().innerHTML = `<div class="msg ok">Verbinde mit ${esc(n.ssid)} …</div>`;
+      try {
+        const r = await api("/api/wifi/connect", { ssid: n.ssid, password: pw });
+        if (!r.ok && r.need_password) { out().innerHTML = ""; return ask(r.message); }
+        out().innerHTML = `<div class="msg ${r.ok ? "ok" : "bad"}">${esc(r.message)}</div>`;
+        if (r.ok) { $("#wifipw").innerHTML = ""; setTimeout(loadWifi, 4000); }
+      } catch (e) { out().innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; } };
     if (n.saved || !n.security) return go("");
-    $("#wifipw").innerHTML = `<label>Passwort für „${esc(n.ssid)}“</label><input type="password" id="wpw" autocomplete="off"><div class="row"><button class="btn primary" id="wgo">Verbinden</button></div>`;
-    $("#wpw").focus(); $("#wgo").onclick = () => go($("#wpw").value); $("#wpw").onkeydown = e => e.key === "Enter" && go($("#wpw").value);
+    ask();
   });
   document.querySelectorAll("[data-forget]").forEach(b => b.onclick = () => action(b, "/api/wifi/forget", { ssid: wifiData.networks[b.dataset.forget].ssid }).then(loadWifi));
   const rs = $("#rescan"); if (rs) rs.onclick = () => { wifiData = null; render(); loadWifi(); };
@@ -528,6 +553,7 @@ async function render() {
   document.querySelectorAll("input[type=range]").forEach(r => r.oninput = () => { const s = $(`[data-show="${r.dataset.k}"]`); if (s) s.textContent = fmts[r.dataset.fmt](Number(r.value)); });
   const m = $("#mute"); if (m) m.onclick = () => action(m, "/api/mute", { on: !S.muted });
   const lo = $("#logout"); if (lo) lo.onclick = async () => { await api("/api/logout", {}); boot(); };
+  addEyes();
   const cp = $("#chpw"); if (cp) cp.onclick = async () => {
     const out = $(".out", cp.closest(".card"));
     try { await api("/api/password", { password: $("#old").value, new_password: $("#new").value }); out.innerHTML = `<div class="msg ok">Passwort geändert.</div>`; }

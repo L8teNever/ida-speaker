@@ -203,22 +203,108 @@ pub async fn scan() -> anyhow::Result<Vec<Network>> {
     Ok(parse_networks(&list, &saved))
 }
 
+/// Fehlertext, wenn für ein gesichertes WLAN kein (gültiges) Passwort da ist. Die Website fragt dann danach.
+pub const NEED_PASSWORD: &str =
+    "Passwort fehlt oder ist falsch – bitte das WLAN-Passwort eingeben.";
+
+/// Meldet NetworkManager, dass ihm das Passwort fehlt oder es nicht passt?
+pub fn is_secret_error(e: &str) -> bool {
+    let e = e.to_lowercase();
+    e.contains("secrets were required")
+        || e.contains("no secrets")
+        || e.contains("psk")
+        || e.contains("802-1x")
+        || e.contains("key-mgmt")
+        || e.contains("password")
+}
+
 /// Verbindet mit einem WLAN. Läuft die Seite gerade über den Hotspot, bricht die Verbindung dabei ab (gleiches Funkmodul).
+///
+/// Ohne Passwort wird ein gespeichertes Profil benutzt. Fehlt dort das Passwort (z. B. nach einem
+/// abgebrochenen Versuch), kommt [`NEED_PASSWORD`]. Mit Passwort werden alte Profile des Netzes
+/// vorher gelöscht und das Profil fest mit Passwort angelegt; schlägt es fehl, wird es wieder entfernt,
+/// damit kein halbes Profil ohne Passwort zurückbleibt.
 pub async fn connect(ssid: &str, password: &str) -> anyhow::Result<String> {
-    if saved_wifi().await.iter().any(|(_, s)| s == ssid) && password.is_empty() {
-        let name = saved_wifi()
-            .await
-            .into_iter()
-            .find(|(_, s)| s == ssid)
-            .map(|(n, _)| n)
-            .unwrap_or_default();
-        return nmcli(&["connection", "up", &name]).await;
+    let saved: Vec<String> = saved_wifi()
+        .await
+        .into_iter()
+        .filter(|(_, s)| s == ssid)
+        .map(|(n, _)| n)
+        .collect();
+    if password.is_empty() {
+        let Some(name) = saved.first() else {
+            // Offenes Netz (oder die Website weiß die Sicherung nicht): einfach probieren
+            return match nmcli(&["device", "wifi", "connect", ssid]).await {
+                Ok(t) => Ok(t),
+                Err(e) if is_secret_error(&e.to_string()) => {
+                    remove_profiles(ssid).await;
+                    anyhow::bail!(NEED_PASSWORD)
+                }
+                Err(e) => Err(e),
+            };
+        };
+        return match nmcli(&["connection", "up", name]).await {
+            Ok(t) => Ok(t),
+            Err(e) if is_secret_error(&e.to_string()) => anyhow::bail!(NEED_PASSWORD),
+            Err(e) => Err(e),
+        };
     }
-    let mut args = vec!["device", "wifi", "connect", ssid];
-    if !password.is_empty() {
-        args.extend(["password", password]);
+    if password.len() < 8 || password.len() > 64 {
+        anyhow::bail!("Ein WLAN-Passwort hat 8 bis 63 Zeichen.");
     }
-    nmcli(&args).await
+    for name in &saved {
+        let _ = nmcli(&["connection", "delete", name]).await;
+    }
+    let res = match nmcli(&["device", "wifi", "connect", ssid, "password", password]).await {
+        // Ältere nmcli legen das Profil manchmal ohne Sicherungsart an – dann von Hand
+        Err(e) if e.to_string().contains("key-mgmt") => {
+            remove_profiles(ssid).await;
+            add_psk_profile(ssid, password).await
+        }
+        r => r,
+    };
+    match res {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            remove_profiles(ssid).await;
+            if is_secret_error(&e.to_string()) {
+                anyhow::bail!("Das Passwort passt nicht zu „{ssid}“.")
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Legt ein WPA-Profil mit fest gespeichertem Passwort an und verbindet.
+async fn add_psk_profile(ssid: &str, password: &str) -> anyhow::Result<String> {
+    nmcli(&[
+        "connection",
+        "add",
+        "type",
+        "wifi",
+        "con-name",
+        ssid,
+        "ssid",
+        ssid,
+        "wifi-sec.key-mgmt",
+        "wpa-psk",
+        "wifi-sec.psk",
+        password,
+        "wifi-sec.psk-flags",
+        "0",
+        "connection.autoconnect",
+        "yes",
+    ])
+    .await?;
+    nmcli(&["connection", "up", ssid]).await
+}
+
+async fn remove_profiles(ssid: &str) {
+    for (name, s) in saved_wifi().await {
+        if s == ssid {
+            let _ = nmcli(&["connection", "delete", &name]).await;
+        }
+    }
 }
 
 pub async fn forget(ssid: &str) -> anyhow::Result<()> {

@@ -428,7 +428,13 @@ async fn wifi_connect(State(app): S, headers: HeaderMap, Json(w): Json<WifiConne
     match crate::wifi::connect(&w.ssid, &w.password).await {
         Ok(_) => Json(json!({ "ok": true, "message": format!("Mit „{}“ verbunden", w.ssid) }))
             .into_response(),
-        Err(e) => Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response(),
+        Err(e) => {
+            let msg = format!("{e:#}");
+            let need =
+                msg == crate::wifi::NEED_PASSWORD || msg.starts_with("Das Passwort passt nicht");
+            app.log(format!("WLAN „{}“: {msg}", w.ssid));
+            Json(json!({ "ok": false, "message": msg, "need_password": need })).into_response()
+        }
     }
 }
 
