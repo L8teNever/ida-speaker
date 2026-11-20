@@ -229,6 +229,7 @@ async fn state(State(app): S, headers: HeaderMap) -> Response {
         "presence": s.presence,
         "triggers": s.triggers,
         "logs": s.logs.iter().rev().take(80).collect::<Vec<_>>(),
+        "partner": s.partner,
         "conversation": s.last_text.iter().map(|(w, t)| json!({"who": w, "text": t})).collect::<Vec<_>>(),
         "min_conf": cfg.wake.min_conf(),
     }))

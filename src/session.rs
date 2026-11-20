@@ -45,12 +45,17 @@ pub fn ticket_body(cfg: &Config, quick: bool) -> serde_json::Value {
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let name = if q.name.is_empty() {
+    let name = quick_name(cfg);
+    serde_json::json!({ "prompt": prompt, "smart_home": q.smart_home, "name": name, "voice": q.voice, "oneshot": q.oneshot })
+}
+
+/// So heißt die Befehls-Persönlichkeit: eigener Name oder das zweite Wort.
+pub fn quick_name(cfg: &Config) -> String {
+    if cfg.quick.name.is_empty() {
         capitalize(&cfg.wake.second_word)
     } else {
-        q.name.clone()
-    };
-    serde_json::json!({ "prompt": prompt, "smart_home": q.smart_home, "name": name, "voice": q.voice, "oneshot": q.oneshot })
+        cfg.quick.name.clone()
+    }
 }
 
 fn capitalize(s: &str) -> String {
@@ -226,7 +231,17 @@ async fn talk(
     *app.mic.lock().unwrap() = Some(mic_tx);
     app.talking.store(true, Ordering::Relaxed);
     app.set_phase(Phase::Talking);
-    app.status.lock().unwrap().last_text.clear();
+    {
+        let mut s = app.status.lock().unwrap();
+        s.last_text.clear();
+        s.partner = if quick {
+            quick_name(&cfg)
+        } else if t.name.is_empty() {
+            "Stella".into()
+        } else {
+            t.name.clone()
+        };
+    }
     app.log("Gespräch verbunden");
 
     let started = Instant::now();

@@ -213,7 +213,7 @@ function renderLive() {
   ].map(([k, v, d]) => `<div class="stat"><span><i class="dot ${d}"></i>${k}</span><b>${esc(v)}</b></div>`).join("") +
     (a.error ? `<div class="stat" style="grid-column:1/-1"><span>Audio-Fehler</span><b>${esc(a.error)}</b></div>` : "");
   const t = $("#talk");
-  if (t) t.innerHTML = S.conversation.length ? S.conversation.map(m => `<p class="${m.who === "user" ? "user" : ""}"><b>${m.who === "user" ? "Du" : "Stella"}:</b> ${esc(m.text)}</p>`).join("") : `<p class="sub">Noch nichts gesagt.</p>`;
+  if (t) t.innerHTML = S.conversation.length ? S.conversation.map(m => `<p class="${m.who === "user" ? "user" : ""}"><b>${m.who === "user" ? "Du" : esc(S.partner || "Stella")}:</b> ${esc(m.text)}</p>`).join("") : `<p class="sub">Noch nichts gesagt.</p>`;
   const tr = $("#trig");
   if (tr) tr.innerHTML = S.triggers.length ? S.triggers.map(x => `<li><span>${new Date(x.at * 1000).toLocaleString("de-DE")}</span>${esc(x.source)} – ${esc(x.result)}</li>`).join("") : `<li class="sub">Noch keine.</li>`;
   const lg = $("#logs"); if (lg) lg.textContent = S.logs.join("\n");

@@ -85,6 +85,8 @@ pub struct Status {
     pub warp: WarpStatus,
     pub audio: AudioInfo,
     pub last_text: VecDeque<(String, String)>,
+    /// Mit wem das letzte Gespräch lief (Name für die Anzeige, z. B. „Stella“ oder der zweite Name).
+    pub partner: String,
     pub wifi: crate::wifi::Status,
     pub bluetooth: crate::bluetooth::Status,
     pub presence: crate::presence::Status,
@@ -178,6 +180,7 @@ impl App {
                 warp: WarpStatus::default(),
                 audio: AudioInfo::default(),
                 last_text: VecDeque::new(),
+                partner: String::new(),
                 wifi: Default::default(),
                 bluetooth: Default::default(),
                 presence: Default::default(),
