@@ -223,7 +223,10 @@ async fn run(app: Arc<App>) {
             r = cfg_rx.changed() => if r.is_err() { return },
             r = session(&app, &mut rx) => {
                 set(&app, |s| { s.running = false; s.connected = false; s.playing = false; });
-                let script = std::fs::read_to_string(dir(&app).join("status")).unwrap_or_default();
+                let mut script = std::fs::read_to_string(dir(&app).join("status")).unwrap_or_default();
+                if script.trim().is_empty() {
+                    script = log_tail(&app, 3);
+                }
                 let err = match r {
                     Err(_) if since.elapsed() > Duration::from_secs(90) && script.trim().is_empty() =>
                         "Soloist läuft nicht – fehlt der Container ida-speaker-spotify? Einmal ida-speaker-update ausführen.".into(),
@@ -235,6 +238,21 @@ async fn run(app: Arc<App>) {
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }
+    }
+}
+
+/// Letzte Zeilen aus Soloists Log (für die Website, wenn es nicht läuft).
+fn log_tail(app: &App, n: usize) -> String {
+    let text = std::fs::read_to_string(dir(app).join("soloist.log")).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(n)..].join(" · ");
+    if tail.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Soloist-Log: {}",
+            tail.chars().take(400).collect::<String>()
+        )
     }
 }
 
