@@ -14,11 +14,12 @@ if [ "$UPDATE" = "1" ]; then
   $SUDO docker pull -q "$IMAGE" >/dev/null
   new="$($SUDO docker image inspect -f '{{.Id}}' "$IMAGE")"
   cur="$($SUDO docker inspect -f '{{.Image}}' ida-speaker 2>/dev/null || true)"
-  if [ "$new" = "$cur" ] && [ "$($SUDO docker inspect -f '{{.State.Running}}' ida-speaker 2>/dev/null)" = "true" ]; then
+  if [ "$new" = "$cur" ] && [ "$($SUDO docker inspect -f '{{.State.Running}}' ida-speaker 2>/dev/null)" = "true" ] \
+     && [ "$($SUDO docker inspect -f '{{.State.Running}}' ida-speaker-spotify 2>/dev/null)" = "true" ]; then
     echo "Schon aktuell – nichts zu tun."
     exit 0
   fi
-  # Neu seit Spotify: avahi, damit die Spotify-App den Lautsprecher findet
+  # Seit Spotify: avahi für die Suche im WLAN
   if command -v apt-get >/dev/null 2>&1 && ! command -v avahi-daemon >/dev/null 2>&1; then
     $SUDO apt-get install -y -q avahi-daemon >/dev/null 2>&1 || true
   fi
@@ -49,7 +50,7 @@ if command -v apt-get >/dev/null 2>&1; then
     command -v rfkill >/dev/null 2>&1 && $SUDO rfkill unblock bluetooth 2>/dev/null || true
   fi
 fi
-# Spotify Connect: die Spotify-App findet den Lautsprecher über avahi des Pi (der Container meldet sich dort über D-Bus an)
+# Spotify: avahi für die Suche im WLAN (schadet nicht, falls Soloist es nicht braucht)
 if command -v apt-get >/dev/null 2>&1 && ! command -v avahi-daemon >/dev/null 2>&1; then
   echo "» Richte avahi ein (Spotify-App findet den Lautsprecher) …"
   $SUDO apt-get install -y -q avahi-daemon >/dev/null 2>&1 || echo "» avahi ließ sich nicht installieren – in der Spotify-App taucht der Lautsprecher dann nicht auf."
@@ -69,13 +70,18 @@ fi
 $SUDO docker rm -f ida-speaker >/dev/null 2>&1 || true
 $SUDO docker run -d --name ida-speaker --restart unless-stopped \
   --device /dev/snd --device /dev/net/tun --cap-add NET_ADMIN \
-  --sysctl net.ipv4.conf.all.src_valid_mark=1 --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+  --sysctl net.ipv4.conf.all.src_valid_mark=1 \
   -e TZ="${TZ:-Europe/Berlin}" \
-  -p 8080:8080 -p 8082:8082 \
+  -p 8080:8080 \
   -v ida-speaker:/data -v ida-speaker-warp:/var/lib/cloudflare-warp \
   -v /run/dbus/system_bus_socket:/run/host-dbus/system_bus_socket \
   -v /etc/hostname:/etc/host-hostname:ro \
   "$IMAGE" >/dev/null
+# Spotify Soloist: zweiter Container im Netzwerk des Pi (die Spotify-App findet ihn nur so im WLAN)
+$SUDO docker rm -f ida-speaker-spotify >/dev/null 2>&1 || true
+$SUDO docker run -d --name ida-speaker-spotify --restart unless-stopped --network host \
+  -v ida-speaker:/data --entrypoint /usr/bin/tini \
+  "$IMAGE" -g -- /usr/local/bin/soloist.sh >/dev/null
 
 ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo ""

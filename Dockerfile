@@ -29,20 +29,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN curl -fsSL -o /tmp/m.zip "https://alphacephei.com/vosk/models/${VOSK_MODEL}.zip" \
     && unzip -q /tmp/m.zip -d /tmp && mv "/tmp/${VOSK_MODEL}" /opt/vosk-model && rm /tmp/m.zip
 
+# PulseAudio (nur für Spotify) darf ALSA-„default“ nie übernehmen, sonst sind Mikro und Lautsprecher stumm: Weiterleitung raus
 FROM debian:trixie-slim
 RUN set -eux; apt-get update; apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg alsa-utils libstdc++6 tini dbus iproute2 network-manager bluez libasound2-plugin-bluez; \
+      ca-certificates curl gnupg alsa-utils libstdc++6 tini dbus iproute2 network-manager bluez libasound2-plugin-bluez \
+      pulseaudio pulseaudio-utils socat libatomic1; \
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg; \
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ trixie main" \
       > /etc/apt/sources.list.d/cloudflare-client.list; \
     apt-get update; apt-get install -y --no-install-recommends cloudflare-warp; \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*; \
+    rm -f /etc/alsa/conf.d/*pulse* /usr/share/alsa/alsa.conf.d/*pulse*; \
+    echo "autospawn = no" >> /etc/pulse/client.conf
 COPY --from=build /usr/local/lib/libvosk.so /usr/local/lib/
 COPY --from=build /usr/local/bin/ida-speaker /usr/local/bin/
 COPY --from=model /opt/vosk-model /opt/vosk-model
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+# Spotify Soloist: das Skript lädt es auf dem Pi selbst herunter (Spotify erlaubt nicht, es ins Image zu packen)
+COPY docker/soloist.sh /usr/local/bin/soloist.sh
 # Selbsttest: alles da, keine fehlenden Bibliotheken
-RUN ldconfig && chmod +x /usr/local/bin/entrypoint.sh \
+RUN ldconfig && chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/soloist.sh \
+    && command -v pulseaudio && command -v parec && command -v socat \
     && command -v warp-svc && command -v warp-cli && command -v tini && command -v nmcli && command -v dbus-send && command -v bluetoothctl \
     && ls /usr/lib/*/alsa-lib/libasound_module_pcm_bluealsa.so && test -d /opt/vosk-model/am \
     && ! ldd /usr/local/bin/ida-speaker /usr/local/lib/libvosk.so | grep "not found"

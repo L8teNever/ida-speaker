@@ -1,48 +1,49 @@
-//! Spotify Connect über librespot: der Lautsprecher erscheint in der Spotify-App als eigenes Gerät.
+//! Spotify Connect über Spotify Soloist (offizieller Spotify-Client für Linux): der Lautsprecher erscheint in der
+//! Spotify-App als eigenes Gerät.
 //!
-//! Die Musik läuft nicht über ein eigenes Audio-Gerät, sondern landet in `Playback::music` und wird im Lautsprecher
-//! dazugemischt. So wird sie beim Wake-Word leiser, und der Echo-Filter kennt sie (sonst hört er die Musik als Sprache).
-//!
-//! Erste Anmeldung: in der Spotify-App das Gerät auswählen (Zeroconf über avahi des Pi). Danach liegen die Zugangsdaten
-//! in `/data/spotify` und der Lautsprecher meldet sich nach jedem Neustart selbst wieder an.
+//! Soloist läuft im zweiten Container `ida-speaker-spotify` (Netzwerk des Pi, damit die Spotify-App ihn im WLAN findet;
+//! Start und Download: docker/soloist.sh). Beide Container teilen sich das Volume `/data`:
+//! - `/data/soloist/run.env`: Name und API-Schlüssel, schreibt dieses Modul; ändert er sich, startet Soloist neu.
+//! - `/data/pulse/native`: PulseAudio aus diesem Container mit einer virtuellen Soundkarte `ida_music`. Soloist spielt
+//!   dorthin, wir lesen sie mit `parec` mit und mischen die Musik selbst dazu – so wird sie beim Wake-Word leiser und der
+//!   Echo-Filter kennt sie.
+//! - `/data/soloist/ws.sock`: Soloists WebSocket-API (Pause, Weiter, Lied laden, Zustand), per socat durchgereicht.
+//! - `/data/soloist/status`: letzte Meldung des Start-Skripts (Download, abgelaufen, Fehler).
 
 use crate::dsp::Resampler;
 use crate::state::App;
-use futures_util::StreamExt;
-use librespot::connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc};
-use librespot::core::authentication::Credentials;
-use librespot::core::cache::Cache;
-use librespot::core::config::{DeviceType, SessionConfig};
-use librespot::core::session::Session;
-use librespot::playback::audio_backend::{Sink, SinkResult};
-use librespot::playback::config::PlayerConfig;
-use librespot::playback::convert::Converter;
-use librespot::playback::decoder::AudioPacket;
-use librespot::playback::mixer::{self, MixerConfig};
-use librespot::playback::player::{Player, PlayerEvent};
+use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
+use serde_json::{Value, json};
+use std::io::Read;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
 
-/// Port des Anmelde-Servers für die Spotify-App (in install.sh freigegeben).
-pub const PORT: u16 = 8082;
-/// Spotify liefert immer 44,1 kHz Stereo.
-const SPOTIFY_RATE: u32 = 44_100;
-/// So viel Musik liegt höchstens im Voraus bereit (Sekunden). Mehr = Pause/Weiter reagieren später.
-const AHEAD_S: f32 = 0.3;
+/// PulseAudio-Socket im geteilten Volume (startet entrypoint.sh).
+pub const PULSE: &str = "unix:/data/pulse/native";
+/// Virtuelle Soundkarte, in die Soloist spielt.
+const SINK: &str = "ida_music";
+/// So liest parec die Musik.
+const RATE: u32 = 48_000;
+/// So viel Musik darf höchstens vorrätig sein, bevor alte verworfen wird (Sekunden).
+const MAX_AHEAD_S: f32 = 0.4;
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Status {
     pub enabled: bool,
     /// Name in der Spotify-App.
     pub name: String,
-    /// Angemeldet und als Gerät bei Spotify sichtbar.
+    /// Soloist läuft und ist bei Spotify angemeldet.
     pub connected: bool,
-    pub user: String,
-    /// Über die Spotify-App findbar (Zeroconf).
-    pub discovery: bool,
+    /// Soloist läuft (WebSocket erreichbar), auch wenn noch niemand angemeldet ist.
+    pub running: bool,
+    /// Gerade das aktive Spotify-Gerät.
+    pub active: bool,
     pub playing: bool,
     pub track: String,
     pub artist: String,
@@ -82,6 +83,31 @@ impl Ctrl {
             _ => return None,
         })
     }
+
+    /// Soloist-Befehle (WebSocket-API) für diesen Befehl, beim aktuellen Zustand.
+    fn commands(&self, st: &Status) -> Vec<Value> {
+        let cmd = |c: &str| json!({ "type": "command", "command": c });
+        let activate = (!st.active).then(|| cmd("activate"));
+        match self {
+            Ctrl::Play => activate.into_iter().chain([cmd("play")]).collect(),
+            Ctrl::Pause => vec![cmd("pause")],
+            Ctrl::Toggle if st.playing => vec![cmd("pause")],
+            Ctrl::Toggle => activate.into_iter().chain([cmd("play")]).collect(),
+            Ctrl::Next => vec![cmd("skip_next")],
+            Ctrl::Prev => vec![cmd("skip_prev")],
+            Ctrl::Volume(p) => {
+                vec![json!({ "type": "command", "command": "set_volume", "volume": (*p).min(100) })]
+            }
+            Ctrl::VolumeBy(d) => {
+                let v = (st.volume as i32 + d).clamp(0, 100);
+                vec![json!({ "type": "command", "command": "set_volume", "volume": v })]
+            }
+            Ctrl::Load(uri) => activate
+                .into_iter()
+                .chain([json!({ "type": "command", "command": "play", "uri": uri })])
+                .collect(),
+        }
+    }
 }
 
 /// Name in der Spotify-App: eingestellt, sonst der Name des Lautsprechers, sonst der Hostname.
@@ -105,86 +131,36 @@ pub fn device_name(cfg: &crate::config::Config) -> String {
     }
 }
 
-/// Feste Geräte-ID aus dem Namen (40 Hex-Zeichen), damit die App nach einem Neustart nicht ein zweites Gerät zeigt.
-pub fn device_id(name: &str) -> String {
-    let mut out = String::with_capacity(40);
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for round in 0u64..3 {
-        for b in name.to_lowercase().bytes().chain(round.to_le_bytes()) {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0100_0000_01b3);
-        }
-        out.push_str(&format!("{h:016x}"));
+/// Inhalt von run.env für das Start-Skript (Shell, einfache Anführungszeichen). Leerer Schlüssel = Soloist aus.
+pub fn run_env(name: &str, key: &str) -> String {
+    let q = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_control() && *c != '\'')
+            .collect::<String>()
+    };
+    format!("SOLOIST_NAME='{}'\nSOLOIST_KEY='{}'\n", q(name), q(key))
+}
+
+fn dir(app: &App) -> PathBuf {
+    app.data.join("soloist")
+}
+
+/// Schreibt run.env nur bei Änderung (sonst startet Soloist unnötig neu).
+fn write_run_env(app: &App, content: &str) {
+    let d = dir(app);
+    let path = d.join("run.env");
+    if std::fs::read_to_string(&path).ok().as_deref() == Some(content) {
+        return;
     }
-    out.truncate(40);
-    out
-}
-
-/// Startet Spotify in einem eigenen Thread (librespot will eine eigene Laufzeit) und baut es bei Änderungen neu auf.
-pub fn spawn(app: Arc<App>) {
-    std::thread::Builder::new()
-        .name("spotify".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("spotify runtime");
-            // LocalSet: alte Spotify-Verbindungen laufen nach dem Abmelden noch mit spawn_local aus
-            tokio::task::LocalSet::new().block_on(&rt, run(app));
-        })
-        .expect("spotify thread");
-}
-
-async fn run(app: Arc<App>) {
-    let mut cfg_rx = app.config.subscribe();
-    loop {
-        let cfg = cfg_rx.borrow_and_update().clone();
-        app.duck_pct.store(cfg.spotify.duck, Ordering::Relaxed);
-        let name = device_name(&cfg);
-        let key = (cfg.spotify.enabled, name.clone());
-        {
-            let mut s = app.status.lock().unwrap();
-            s.spotify = Status {
-                enabled: cfg.spotify.enabled,
-                name: name.clone(),
-                ..Default::default()
-            };
-        }
-        if !cfg.spotify.enabled {
-            if cfg_rx.changed().await.is_err() {
-                return;
-            }
-            continue;
-        }
-        let (tx, rx) = mpsc::unbounded_channel();
-        *app.music.lock().unwrap() = Some(tx);
-        let restart = async {
-            loop {
-                if cfg_rx.changed().await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-                let next = cfg_rx.borrow().clone();
-                app.duck_pct.store(next.spotify.duck, Ordering::Relaxed);
-                if (next.spotify.enabled, device_name(&next)) != key {
-                    break;
-                }
-            }
-        };
-        tokio::select! {
-            r = device(&app, &name, rx) => {
-                if let Err(e) = r {
-                    app.log(format!("Spotify: {e:#}"));
-                    app.status.lock().unwrap().spotify.error = format!("{e:#}");
-                }
-                *app.music.lock().unwrap() = None;
-                tokio::time::sleep(Duration::from_secs(15)).await;
-            }
-            _ = restart => {
-                app.log("Spotify-Einstellungen geändert – starte Spotify neu");
-            }
-        }
-        *app.music.lock().unwrap() = None;
-        app.playback.lock().unwrap().music.clear();
+    let tmp = d.join("run.env.tmp");
+    let res = std::fs::create_dir_all(&d)
+        .and_then(|_| std::fs::write(&tmp, content))
+        .and_then(|_| std::fs::rename(&tmp, &path));
+    if let Err(e) = res {
+        app.log(format!(
+            "Spotify: {} nicht schreibbar ({e})",
+            path.display()
+        ));
     }
 }
 
@@ -192,287 +168,311 @@ fn set(app: &App, f: impl FnOnce(&mut Status)) {
     f(&mut app.status.lock().unwrap().spotify);
 }
 
-/// Ein Spotify-Gerät: Anmeldung (gespeichert oder über die App), Wiedergabe, Befehle. Endet nur bei einem Fehler.
-async fn device(
-    app: &Arc<App>,
-    name: &str,
-    mut ctrl: mpsc::UnboundedReceiver<Ctrl>,
-) -> anyhow::Result<()> {
-    let dir = app.data.join("spotify");
-    std::fs::create_dir_all(&dir)?;
-    // Keine Lieder auf der SD-Karte zwischenspeichern, nur Anmeldung und Lautstärke
-    let cache = Cache::new(Some(&dir), Some(&dir), None, None)?;
-    let session_config = SessionConfig {
-        device_id: device_id(name),
-        ..SessionConfig::default()
-    };
-    let connect_config = ConnectConfig {
-        name: name.to_string(),
-        device_type: DeviceType::Speaker,
-        ..ConnectConfig::default()
-    };
+/// Startet Spotify: Einstellungen an das Start-Skript, Musik mitlesen, Steuerung über die WebSocket-API.
+pub fn spawn(app: Arc<App>) {
+    let reader = app.clone();
+    std::thread::Builder::new()
+        .name("spotify-audio".into())
+        .spawn(move || music_reader(reader))
+        .expect("spotify thread");
+    tokio::spawn(run(app));
+}
 
-    let mut discovery = match librespot::discovery::Discovery::builder(
-        session_config.device_id.clone(),
-        session_config.client_id.clone(),
-    )
-    .name(name.to_string())
-    .device_type(DeviceType::Speaker)
-    .port(PORT)
-    .launch()
-    {
-        Ok(d) => {
-            set(app, |s| s.discovery = true);
-            Some(d)
+async fn run(app: Arc<App>) {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    *app.music.lock().unwrap() = Some(tx);
+    let mut cfg_rx = app.config.subscribe();
+    let mut since = Instant::now(); // seit wann Soloist laufen sollte (für die Fehlermeldung)
+    loop {
+        let cfg = cfg_rx.borrow_and_update().clone();
+        app.duck_pct.store(cfg.spotify.duck, Ordering::Relaxed);
+        let name = device_name(&cfg);
+        let on = cfg.spotify.enabled && !cfg.spotify.api_key.is_empty();
+        write_run_env(
+            &app,
+            &run_env(&name, if on { &cfg.spotify.api_key } else { "" }),
+        );
+        set(&app, |s| {
+            s.enabled = cfg.spotify.enabled;
+            s.name = name.clone();
+            if !on {
+                *s = Status {
+                    enabled: cfg.spotify.enabled,
+                    name: name.clone(),
+                    error: if cfg.spotify.enabled {
+                        "Kein Soloist-API-Schlüssel eingetragen.".into()
+                    } else {
+                        String::new()
+                    },
+                    ..Default::default()
+                };
+            }
+        });
+        if !on {
+            // Befehle verwerfen, bis Spotify an ist
+            tokio::select! {
+                r = cfg_rx.changed() => if r.is_err() { return },
+                Some(_) = rx.recv() => app.log("Spotify ist aus (Audio → Spotify)"),
+            }
+            since = Instant::now();
+            continue;
         }
-        Err(e) => {
-            app.log(format!(
-                "Spotify: in der App nicht findbar ({e}) – läuft avahi-daemon auf dem Pi?"
-            ));
-            None
+        tokio::select! {
+            r = cfg_rx.changed() => if r.is_err() { return },
+            r = session(&app, &mut rx) => {
+                set(&app, |s| { s.running = false; s.connected = false; s.playing = false; });
+                let script = std::fs::read_to_string(dir(&app).join("status")).unwrap_or_default();
+                let err = match r {
+                    Err(_) if since.elapsed() > Duration::from_secs(90) && script.trim().is_empty() =>
+                        "Soloist läuft nicht – fehlt der Container ida-speaker-spotify? Einmal ida-speaker-update ausführen.".into(),
+                    Err(e) if !script.trim().is_empty() => format!("{} ({e:#})", script.trim()),
+                    Err(e) => format!("Soloist startet … ({e:#})"),
+                    Ok(()) => "Verbindung zu Soloist beendet".into(),
+                };
+                set(&app, |s| s.error = err);
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
         }
-    };
-    let mut credentials: Option<Credentials> = cache.credentials();
-    if credentials.is_none() && discovery.is_none() {
-        anyhow::bail!("keine Anmeldung gespeichert und in der App nicht findbar");
     }
-    if credentials.is_none() {
-        app.log(format!(
-            "Spotify: in der Spotify-App einmal „{name}“ als Gerät auswählen"
-        ));
-    }
+}
 
-    let mixer = mixer::find(None).ok_or_else(|| anyhow::anyhow!("kein Spotify-Mixer"))?(
-        MixerConfig::default(),
-    )?;
-    let mut session = Session::new(session_config.clone(), Some(cache.clone()));
-    let sink_app = app.clone();
-    let player = Player::new(
-        PlayerConfig::default(),
-        session.clone(),
-        mixer.get_soft_volume(),
-        move || Box::new(MusicSink::new(sink_app)) as Box<dyn Sink>,
-    );
-    let mut events = player.get_player_event_channel();
-
-    let mut spirc: Option<Spirc> = None;
-    let mut spirc_task: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>> = None;
-    let mut connecting = credentials.is_some();
-    let mut restarts: Vec<Instant> = Vec::new();
-
+/// Eine Verbindung zur WebSocket-API von Soloist. Endet, wenn sie abbricht.
+async fn session(app: &Arc<App>, rx: &mut mpsc::UnboundedReceiver<Ctrl>) -> anyhow::Result<()> {
+    let sock = dir(app).join("ws.sock");
+    let stream = tokio::net::UnixStream::connect(&sock).await?;
+    let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost/", stream).await?;
+    ws.send(Message::text(
+        json!({ "type": "command", "command": "get_state" }).to_string(),
+    ))
+    .await?;
+    set(app, |s| {
+        s.running = true;
+        s.error.clear();
+    });
+    app.log("Spotify: Soloist verbunden");
     loop {
         tokio::select! {
-            c = async { discovery.as_mut().expect("discovery").next().await }, if discovery.is_some() => {
-                let Some(c) = c else {
-                    set(app, |s| s.discovery = false);
-                    discovery = None;
-                    continue;
-                };
-                app.log("Spotify: in der App ausgewählt – melde an");
-                credentials = Some(c);
-                restarts.clear();
-                if let Some(s) = spirc.take() {
-                    let _ = s.shutdown();
-                }
-                if let Some(t) = spirc_task.take() {
-                    tokio::task::spawn_local(t);
-                }
-                if !session.is_invalid() {
-                    session.shutdown();
-                }
-                connecting = true;
-            }
-            _ = async {}, if connecting => {
-                connecting = false;
-                if session.is_invalid() {
-                    session = Session::new(session_config.clone(), Some(cache.clone()));
-                    player.set_session(session.clone());
-                }
-                let c = credentials.clone().unwrap_or_default();
-                match Spirc::new(connect_config.clone(), session.clone(), c, player.clone(), mixer.clone()).await {
-                    Ok((s, task)) => {
-                        let user = session.username();
-                        app.log(format!("Spotify: angemeldet als {user} – „{name}“ ist in der App da"));
-                        set(app, |st| { st.connected = true; st.user = user; st.error.clear(); });
-                        spirc = Some(s);
-                        spirc_task = Some(Box::pin(task));
-                    }
-                    Err(e) => {
-                        set(app, |st| { st.connected = false; st.error = format!("Anmeldung fehlgeschlagen: {e}"); });
-                        app.log(format!("Spotify: Anmeldung fehlgeschlagen ({e}) – in der App neu auswählen"));
-                    }
+            msg = ws.next() => {
+                let Some(msg) = msg else { return Ok(()) };
+                if let Message::Text(t) = msg?
+                    && let Ok(v) = serde_json::from_str::<Value>(&t)
+                {
+                    on_event(app, &v);
                 }
             }
-            _ = async { spirc_task.as_mut().expect("spirc").await }, if spirc_task.is_some() => {
-                spirc_task = None;
-                spirc = None;
-                set(app, |s| { s.connected = false; s.playing = false; });
-                restarts.retain(|t| t.elapsed() < Duration::from_secs(600));
-                if restarts.len() >= 5 {
-                    anyhow::bail!("Verbindung zu Spotify bricht ständig ab");
+            Some(c) = rx.recv() => {
+                let st = app.status.lock().unwrap().spotify.clone();
+                if !st.connected {
+                    app.log(format!("Spotify: noch nicht angemeldet – in der Spotify-App einmal „{}“ auswählen", st.name));
                 }
-                restarts.push(Instant::now());
-                app.log("Spotify: Verbindung weg – verbinde neu");
-                if !session.is_invalid() {
-                    session.shutdown();
-                }
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                connecting = credentials.is_some();
-            }
-            Some(ev) = events.recv() => on_event(app, ev),
-            Some(c) = ctrl.recv() => {
-                let Some(s) = spirc.as_ref() else {
-                    app.log(format!("Spotify: noch nicht angemeldet – in der Spotify-App einmal „{name}“ auswählen"));
-                    continue;
-                };
-                if let Err(e) = command(app, s, c) {
-                    app.log(format!("Spotify: {e}"));
+                for cmd in c.commands(&st) {
+                    ws.send(Message::text(cmd.to_string())).await?;
                 }
             }
         }
     }
 }
 
-fn command(app: &App, s: &Spirc, c: Ctrl) -> Result<(), librespot::core::Error> {
-    match c {
-        Ctrl::Play => {
-            s.activate()?;
-            s.play()
-        }
-        Ctrl::Pause => s.pause(),
-        Ctrl::Toggle => s.play_pause(),
-        Ctrl::Next => s.next(),
-        Ctrl::Prev => s.prev(),
-        Ctrl::Volume(p) => s.set_volume(pct_to_volume(p)),
-        Ctrl::VolumeBy(d) => {
-            let now = app.status.lock().unwrap().spotify.volume as i32;
-            s.set_volume(pct_to_volume((now + d).clamp(0, 100) as u32))
-        }
-        Ctrl::Load(uri) => {
-            s.activate()?;
-            let options = LoadRequestOptions {
-                start_playing: true,
-                ..Default::default()
-            };
-            let req = if uri.starts_with("spotify:track:") || uri.starts_with("spotify:episode:") {
-                LoadRequest::from_tracks(vec![uri], options)
-            } else {
-                LoadRequest::from_context_uri(uri, options)
-            };
-            s.load(req)
-        }
-    }
-}
-
-pub fn pct_to_volume(p: u32) -> u16 {
-    (u32::from(u16::MAX) * p.min(100) / 100) as u16
-}
-
-pub fn volume_to_pct(v: u16) -> u32 {
-    (u32::from(v) * 100 + u32::from(u16::MAX) / 2) / u32::from(u16::MAX)
-}
-
-fn on_event(app: &App, ev: PlayerEvent) {
-    match ev {
-        PlayerEvent::Playing { .. } => set(app, |s| s.playing = true),
-        PlayerEvent::Paused { .. } | PlayerEvent::Stopped { .. } => set(app, |s| s.playing = false),
-        PlayerEvent::VolumeChanged { volume } => set(app, |s| s.volume = volume_to_pct(volume)),
-        PlayerEvent::TrackChanged { audio_item } => {
-            let artist = match &audio_item.unique_fields {
-                librespot::metadata::audio::UniqueFields::Track { artists, .. } => artists
-                    .0
-                    .iter()
-                    .map(|a| a.name.clone())
+/// Titel und Künstler aus einem Soloist-`item` (Felder je nach Art unterschiedlich, daher tolerant).
+pub fn item_info(item: &Value) -> (String, String) {
+    let d = item.get("decorations").unwrap_or(item);
+    let text = |v: &Value, keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| v.get(*k).and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let title = [d, item]
+        .iter()
+        .map(|v| text(v, &["name", "title", "track_name"]))
+        .find(|s| !s.is_empty())
+        .unwrap_or_default();
+    let names = |v: &Value| -> String {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().or_else(|| x.get("name").and_then(Value::as_str)))
                     .collect::<Vec<_>>()
-                    .join(", "),
-                librespot::metadata::audio::UniqueFields::Episode { show_name, .. } => {
-                    show_name.clone()
-                }
-                #[allow(unreachable_patterns)]
-                _ => String::new(),
-            };
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+    let artist = [d, item]
+        .iter()
+        .find_map(|v| {
+            let s = v
+                .get("artists")
+                .map(names)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| text(v, &["artist", "artist_name", "show_name", "subtitle"]));
+            (!s.is_empty()).then_some(s)
+        })
+        .unwrap_or_default();
+    (title, artist)
+}
+
+fn on_event(app: &App, v: &Value) {
+    let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
+    let status = |v: &Value| {
+        v.get("status")
+            .and_then(Value::as_str)
+            .map(|s| s == "playing")
+    };
+    let volume = |v: &Value| {
+        v.get("volume")
+            .and_then(Value::as_u64)
+            .map(|n| n.min(100) as u32)
+    };
+    match kind {
+        "auth_state" => {
+            let logged = v.get("logged_in").and_then(Value::as_bool).unwrap_or(false);
+            let active = v.get("is_active").and_then(Value::as_bool).unwrap_or(false);
+            if logged && !app.status.lock().unwrap().spotify.connected {
+                app.log("Spotify: angemeldet");
+            }
             set(app, |s| {
-                s.track = audio_item.name.clone();
-                s.artist = artist;
+                s.connected = logged;
+                s.active = active;
+                if !logged {
+                    s.playing = false;
+                }
             });
         }
-        PlayerEvent::SessionDisconnected { .. } => set(app, |s| {
-            s.connected = false;
-            s.playing = false;
+        "playback_state" => set(app, |s| {
+            s.connected = true;
+            if let Some(p) = status(v) {
+                s.playing = p;
+            }
+            if let Some(n) = volume(v) {
+                s.volume = n;
+            }
+            if let Some(a) = v.get("is_active").and_then(Value::as_bool) {
+                s.active = a;
+            }
+            if let Some(item) = v.get("item").filter(|i| !i.is_null()) {
+                (s.track, s.artist) = item_info(item);
+            }
         }),
+        "playback_changed" => set(app, |s| {
+            if let Some(p) = status(v) {
+                s.playing = p;
+            }
+        }),
+        "volume_changed" => set(app, |s| {
+            if let Some(n) = volume(v) {
+                s.volume = n;
+            }
+        }),
+        "track_changed" => {
+            if let Some(item) = v.get("item") {
+                let (t, a) = item_info(item);
+                set(app, |s| (s.track, s.artist) = (t, a));
+            }
+        }
+        "device_changed" => {
+            if let Some(a) = v.get("is_active").and_then(Value::as_bool) {
+                set(app, |s| s.active = a);
+            }
+        }
+        "error" => {
+            let m = v.get("message").and_then(Value::as_str).unwrap_or("Fehler");
+            app.log(format!("Spotify: {m}"));
+        }
         _ => {}
     }
 }
 
-/// Nimmt die Musik von librespot (44,1 kHz Stereo) und legt sie als Mono in Geräterate in `Playback::music`.
-/// Blockiert, solange genug Musik bereitliegt – so gibt der Lautsprecher das Tempo vor, nicht der Decoder.
-struct MusicSink {
-    app: Arc<App>,
-    rs: Resampler,
-    rate: u32,
-    mono: Vec<f32>,
-    out: Vec<f32>,
-}
-
-impl MusicSink {
-    fn new(app: Arc<App>) -> Self {
-        let rate = app.output_rate().max(8000);
-        Self {
-            app,
-            rs: Resampler::new(SPOTIFY_RATE, rate),
-            rate,
-            mono: Vec::new(),
-            out: Vec::new(),
+/// Liest die Musik von der virtuellen Soundkarte (parec) und legt sie als Mono in Geräterate in `Playback::music`.
+fn music_reader(app: Arc<App>) {
+    let mut warned = false;
+    loop {
+        let cfg = app.cfg();
+        if !cfg.spotify.enabled || cfg.spotify.api_key.is_empty() || app.output_rate() == 0 {
+            std::thread::sleep(Duration::from_secs(2));
+            continue;
         }
-    }
-}
-
-impl Sink for MusicSink {
-    fn stop(&mut self) -> SinkResult<()> {
-        // Pause soll sofort still sein, nicht erst nach dem Puffer
-        self.app.playback.lock().unwrap().music.clear();
-        Ok(())
-    }
-
-    fn write(&mut self, packet: AudioPacket, _: &mut Converter) -> SinkResult<()> {
-        let AudioPacket::Samples(samples) = packet else {
-            return Ok(());
-        };
-        let rate = self.app.output_rate();
-        if rate == 0 {
-            // Audio läuft gerade nicht: im Takt weiterlaufen, aber nichts ablegen
-            let secs = samples.len() as f32 / 2.0 / SPOTIFY_RATE as f32;
-            std::thread::sleep(Duration::from_secs_f32(secs));
-            return Ok(());
-        }
-        if rate != self.rate {
-            self.rs = Resampler::new(SPOTIFY_RATE, rate);
-            self.rate = rate;
-        }
-        self.mono.clear();
-        self.mono.extend(
-            samples
-                .chunks(2)
-                .map(|f| (f.iter().sum::<f64>() / f.len() as f64) as f32),
-        );
-        self.out.clear();
-        self.rs.process(&self.mono, &mut self.out);
-        let ahead = (rate as f32 * AHEAD_S) as usize;
-        let waited = Instant::now();
-        loop {
-            let len = self.app.playback.lock().unwrap().music.len();
-            // Hängt der Lautsprecher (Gerät weg), nicht ewig warten
-            if len < ahead || waited.elapsed() > Duration::from_secs(2) {
-                break;
+        match parec() {
+            Ok(mut child) => {
+                warned = false;
+                let r = pump(&app, &mut child);
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Err(e) = r {
+                    tracing::debug!("parec: {e}");
+                }
             }
-            std::thread::sleep(Duration::from_millis(10));
+            Err(e) if !warned => {
+                warned = true;
+                app.log(format!("Spotify: Musik lässt sich nicht mitlesen ({e})"));
+            }
+            Err(_) => {}
         }
-        let mut p = self.app.playback.lock().unwrap();
-        if p.music.len() > ahead * 4 {
-            p.music.clear();
+        app.playback.lock().unwrap().music.clear();
+        std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
+fn parec() -> std::io::Result<Child> {
+    Command::new("parec")
+        .args([
+            &format!("--server={}", PULSE.trim_start_matches("unix:")),
+            &format!("--device={SINK}.monitor"),
+            "--raw",
+            "--format=float32le",
+            &format!("--rate={RATE}"),
+            "--channels=2",
+            "--latency-msec=40",
+            "--client-name=ida-speaker",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+/// Läuft, bis parec endet, Spotify ausgeschaltet wird oder sich die Ausgaberate ändert.
+fn pump(app: &App, child: &mut Child) -> std::io::Result<()> {
+    let mut out = child.stdout.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+    let rate = app.output_rate();
+    let mut rs = Resampler::new(RATE, rate);
+    let mut buf = vec![0u8; 8 * 960]; // 20 ms Stereo-f32
+    let mut fill = 0;
+    let (mut mono, mut res) = (Vec::new(), Vec::new());
+    let max = (rate as f32 * MAX_AHEAD_S) as usize;
+    let mut checked = Instant::now();
+    loop {
+        let n = out.read(&mut buf[fill..])?;
+        if n == 0 {
+            return Ok(());
         }
-        p.music.extend(self.out.iter().copied());
-        Ok(())
+        fill += n;
+        let whole = fill / 8 * 8;
+        mono.clear();
+        mono.extend(buf[..whole].as_chunks::<8>().0.iter().map(|f| {
+            let l = f32::from_le_bytes([f[0], f[1], f[2], f[3]]);
+            let r = f32::from_le_bytes([f[4], f[5], f[6], f[7]]);
+            (l + r) * 0.5
+        }));
+        buf.copy_within(whole..fill, 0);
+        fill -= whole;
+        res.clear();
+        rs.process(&mono, &mut res);
+        {
+            let mut p = app.playback.lock().unwrap();
+            p.music.extend(res.iter().copied());
+            // Uhr der Soundkarte und der virtuellen Karte laufen minimal anders: zu viel Vorrat verwerfen
+            if p.music.len() > max {
+                let drop = p.music.len() - max / 2;
+                p.music.drain(..drop);
+            }
+        }
+        if checked.elapsed() > Duration::from_secs(1) {
+            checked = Instant::now();
+            let cfg = app.cfg();
+            if !cfg.spotify.enabled || cfg.spotify.api_key.is_empty() || app.output_rate() != rate {
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -498,19 +498,49 @@ mod tests {
     }
 
     #[test]
-    fn feste_geraete_id() {
-        let a = device_id("Nina Küche");
-        assert_eq!(a.len(), 40);
-        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(a, device_id("nina küche"));
-        assert_ne!(a, device_id("Stella"));
+    fn soloist_befehle() {
+        let idle = Status::default();
+        let names = |c: Ctrl, st: &Status| {
+            c.commands(st)
+                .iter()
+                .map(|v| v["command"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(Ctrl::Play, &idle), ["activate", "play"]);
+        let active = Status {
+            active: true,
+            playing: true,
+            volume: 95,
+            ..Default::default()
+        };
+        assert_eq!(names(Ctrl::Toggle, &active), ["pause"]);
+        assert_eq!(names(Ctrl::Next, &active), ["skip_next"]);
+        assert_eq!(Ctrl::VolumeBy(10).commands(&active)[0]["volume"], 100);
+        let load = Ctrl::Load("spotify:track:x".into()).commands(&active);
+        assert_eq!(load.len(), 1);
+        assert_eq!(load[0]["uri"], "spotify:track:x");
     }
 
     #[test]
-    fn lautstaerke_umrechnen() {
-        assert_eq!(pct_to_volume(100), u16::MAX);
-        assert_eq!(pct_to_volume(0), 0);
-        assert_eq!(volume_to_pct(pct_to_volume(37)), 37);
+    fn titel_und_kuenstler() {
+        let v: Value = serde_json::from_str(
+            r#"{"uri":"spotify:track:1","decorations":{"name":"Flash Mich","artists":[{"name":"Mark Forster"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(item_info(&v), ("Flash Mich".into(), "Mark Forster".into()));
+        let v: Value =
+            serde_json::from_str(r#"{"decorations":{"title":"Folge 1","artists":["A","B"]}}"#)
+                .unwrap();
+        assert_eq!(item_info(&v), ("Folge 1".into(), "A, B".into()));
+        assert_eq!(item_info(&json!({})), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn einstellungen_fuer_das_skript() {
+        assert_eq!(
+            run_env("Nina's Küche", "ab\ncd"),
+            "SOLOIST_NAME='Ninas Küche'\nSOLOIST_KEY='abcd'\n"
+        );
     }
 
     #[test]

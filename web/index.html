@@ -337,15 +337,16 @@ function presenceCard() {
 function spotifyCard() {
   const p = S.spotify || {}, c = S.config.spotify;
   const state = !c.enabled ? `<i class="dot"></i>Aus.` :
-    p.connected ? `<i class="dot good"></i>Angemeldet${p.user ? " als " + esc(p.user) : ""}. In der Spotify-App heißt er „${esc(p.name)}“.` :
-    p.error ? `<i class="dot bad"></i>${esc(p.error)}` :
-    `<i class="dot warn"></i>Noch nicht angemeldet. Wähle in der Spotify-App einmal „${esc(p.name)}“ als Gerät.`;
-  const now = p.connected && p.track ? `<p>${p.playing ? "▶" : "⏸"} <b>${esc(p.track)}</b>${p.artist ? " – " + esc(p.artist) : ""}${p.volume != null ? ` <small class="sub">· Lautstärke ${p.volume} %</small>` : ""}</p>` : "";
+    p.connected ? `<i class="dot good"></i>Angemeldet. In der Spotify-App heißt er „${esc(p.name)}“.` :
+    p.running ? `<i class="dot warn"></i>Läuft, aber noch nicht angemeldet. Wähle in der Spotify-App einmal „${esc(p.name)}“ als Gerät.` :
+    p.error ? `<i class="dot bad"></i>${esc(p.error)}` : `<i class="dot warn"></i>Startet …`;
+  const now = p.connected && p.track ? `<p>${p.playing ? "▶" : "⏸"} <b>${esc(p.track)}</b>${p.artist ? " – " + esc(p.artist) : ""} <small class="sub">· Lautstärke ${p.volume} %</small></p>` : "";
   return `<div class="card"><h2>Spotify</h2>
-    <p class="hint">Der Lautsprecher erscheint in der Spotify-App als eigenes Gerät (braucht Spotify Premium). Sagst du den Namen, wird die Musik leiser, bis das Gespräch vorbei ist. Der Echo-Filter rechnet die Musik heraus.</p>
+    <p class="hint">Der Lautsprecher erscheint in der Spotify-App als eigenes Gerät. Dafür läuft Spotify Soloist, der offizielle Spotify-Client für den Pi, im zweiten Container <code>ida-speaker-spotify</code>. Sagst du den Namen, wird die Musik leiser, bis das Gespräch vorbei ist. Der Echo-Filter rechnet sie heraus.</p>
     <p>${state}</p>${now}
     ${p.connected ? `<div class="row"><button class="btn" data-act="/api/spotify/prev">⏮</button><button class="btn" data-act="/api/spotify/toggle">${p.playing ? "Pause" : "Weiter"}</button><button class="btn" data-act="/api/spotify/next">⏭</button></div>` : ""}
-    ${toggle("spotify.enabled", "Spotify Connect an")}
+    ${toggle("spotify.enabled", "Spotify an")}
+    ${field("spotify.api_key", "Soloist-API-Schlüssel", "password", "Einmal erstellen auf developer.spotify.com/dashboard/soloist (Konto mit Premium). Leer lassen = unverändert.")}
     ${field("spotify.name", "Name in der Spotify-App", "text", "Leer = Name des Lautsprechers.")}
     ${range("spotify.duck", "Musik beim Sprechen", 0, 100, 5, v => v + " %")}
     ${saveRow()}</div>`;

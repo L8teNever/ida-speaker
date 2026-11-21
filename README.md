@@ -80,13 +80,13 @@ Unter **Wake-Word → Zweiter Name für schnelle Befehle** trägst du ein zweite
 
 ## Spotify
 
-Der Lautsprecher ist ein Spotify-Connect-Gerät (über librespot, braucht Spotify Premium). Er taucht in der Spotify-App unter seinem Namen auf, z. B. „Nina Küche“.
+Der Lautsprecher ist ein Spotify-Connect-Gerät und taucht in der Spotify-App unter seinem Namen auf, z. B. „Nina Küche“. Dafür läuft **Spotify Soloist**, der offizielle Spotify-Client für den Pi (braucht Spotify Premium).
 
-- **Einmal anmelden:** In der Spotify-App unten auf das Geräte-Symbol tippen und den Lautsprecher wählen. Danach meldet er sich nach jedem Neustart selbst wieder an.
+- **Einrichten:** Auf [developer.spotify.com/dashboard/soloist](https://developer.spotify.com/dashboard/soloist) einen API-Schlüssel erstellen und unter **Audio → Spotify** eintragen. Dann in der Spotify-App einmal den Lautsprecher als Gerät wählen. Danach meldet er sich nach jedem Neustart selbst an.
 - **Beim Sprechen:** Sagst du den Namen, wird die Musik leiser, bis das Gespräch vorbei ist. Wie leise, stellst du unter **Audio → Spotify** ein. Der Echo-Filter rechnet die Musik heraus.
-- **Per Sprache:** „Pause“, „Weiter“, „Nächstes Lied“, „Leiser“ gehen sofort an genau diesen Lautsprecher. „Spiel Blinding Lights“ braucht zusätzlich die Spotify-Anmeldung in IDA (`SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET`, dann `<IDA>/api/v1/spotify/login`).
-- **Technik:** Die Spotify-App findet den Lautsprecher über avahi auf dem Pi (installiert `install.sh`). Die Anmeldung läuft über Port 8082. Host-Netzwerk braucht der Container nicht.
-- Laut den librespot-Machern ist diese Art Zugang von Spotify vermutlich nicht erlaubt. Viele nutzen es seit Jahren, ein Restrisiko bleibt.
+- **Per Sprache:** „Pause“, „Weiter“, „Nächstes Lied“, „Leiser“ gehen sofort an genau diesen Lautsprecher. „Spiel Blinding Lights“ braucht zusätzlich die Spotify-Anmeldung in IDA (`<IDA>/api/v1/spotify/login`).
+- **Technik:** Soloist läuft im zweiten Container `ida-speaker-spotify` im Netzwerk des Pi, damit die Spotify-App ihn im WLAN findet. Er lädt Soloist selbst bei Spotify herunter (ins Image darf es nicht) und holt alle 60 Tage eine neue Version, weil jede nach 90 Tagen abläuft. Der Ton geht über eine virtuelle Soundkarte (PulseAudio im Hauptcontainer) zu ida-speaker, gesteuert wird über Soloists lokale WebSocket-API. Beides liegt im geteilten Volume.
+- Vorher lief hier librespot. Das spielt seit 2026 für die meisten Konten nichts mehr ab, weil Spotify ihm die Schlüssel verweigert.
 
 ## Benutzen
 

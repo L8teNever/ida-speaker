@@ -296,7 +296,7 @@ impl Default for Presence {
     }
 }
 
-/// Spotify Connect: der Lautsprecher erscheint in der Spotify-App als eigenes Gerät (librespot, braucht Premium).
+/// Spotify Connect über Spotify Soloist (offiziell, braucht Premium): der Lautsprecher erscheint in der Spotify-App als eigenes Gerät.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Spotify {
@@ -305,6 +305,8 @@ pub struct Spotify {
     pub name: String,
     /// So laut bleibt die Musik in Prozent, solange gesprochen wird (0 = ganz aus).
     pub duck: u32,
+    /// Soloist-API-Schlüssel (developer.spotify.com/dashboard/soloist). Leer = Spotify aus.
+    pub api_key: String,
 }
 
 impl Default for Spotify {
@@ -313,6 +315,7 @@ impl Default for Spotify {
             enabled: true,
             name: String::new(),
             duck: 15,
+            api_key: String::new(),
         }
     }
 }
@@ -393,6 +396,7 @@ impl Config {
             serde_json::Value::String(mask(&self.wifi.hotspot_password));
         v["cloudflare"]["client_secret"] =
             serde_json::Value::String(mask(&self.cloudflare.client_secret));
+        v["spotify"]["api_key"] = serde_json::Value::String(mask(&self.spotify.api_key));
         v
     }
 
@@ -473,6 +477,19 @@ impl Config {
         next.call.max_minutes = next.call.max_minutes.clamp(1, 120);
         next.spotify.name = next.spotify.name.trim().chars().take(48).collect();
         next.spotify.duck = next.spotify.duck.min(100);
+        if next.spotify.api_key.trim().is_empty()
+            || next.spotify.api_key == mask(&self.spotify.api_key)
+        {
+            next.spotify.api_key = self.spotify.api_key.clone();
+        }
+        next.spotify.api_key = next
+            .spotify
+            .api_key
+            .trim()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(512)
+            .collect();
         Ok(next)
     }
 }
