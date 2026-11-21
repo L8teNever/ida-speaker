@@ -605,12 +605,12 @@ mod tests {
     #[test]
     fn spotify_schluessel_im_namensfeld() {
         let mut s = Spotify {
-            name: "Spak_cgply2Jy7nQ8fCffCVxWpuAPvHA62VIU".into(),
+            name: "Test_abcdefghijklmnopqrstuvwxyz0123456".into(),
             ..Default::default()
         };
         s.fix();
         assert_eq!(s.name, "");
-        assert_eq!(s.api_key, "Spak_cgply2Jy7nQ8fCffCVxWpuAPvHA62VIU");
+        assert_eq!(s.api_key, "Test_abcdefghijklmnopqrstuvwxyz0123456");
         let mut s = Spotify {
             name: "Nina Küche".into(),
             api_key: "x".into(),
