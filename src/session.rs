@@ -36,8 +36,14 @@ pub async fn ticket(cfg: &Config) -> anyhow::Result<Ticket> {
 
 /// Was beim Ticket mitgeht: Anweisungen, Smart Home und beim zweiten Namen die Befehls-Persönlichkeit.
 pub fn ticket_body(cfg: &Config, quick: bool) -> serde_json::Value {
+    // So heißt der Lautsprecher in der Spotify-App („Spiel Spotify“ holt die Musik hierher); leer = Spotify aus
+    let spotify = if cfg.spotify.enabled && !cfg.spotify.api_key.is_empty() {
+        crate::spotify::device_name(cfg)
+    } else {
+        String::new()
+    };
     if !quick {
-        return serde_json::json!({ "prompt": cfg.assistant.prompt, "smart_home": cfg.assistant.smart_home });
+        return serde_json::json!({ "prompt": cfg.assistant.prompt, "smart_home": cfg.assistant.smart_home, "spotify": spotify });
     }
     let q = &cfg.quick;
     let prompt = [cfg.assistant.prompt.trim(), q.prompt.trim()]
@@ -46,7 +52,7 @@ pub fn ticket_body(cfg: &Config, quick: bool) -> serde_json::Value {
         .collect::<Vec<_>>()
         .join("\n\n");
     let name = quick_name(cfg);
-    serde_json::json!({ "prompt": prompt, "smart_home": q.smart_home, "name": name, "voice": q.voice, "oneshot": q.oneshot })
+    serde_json::json!({ "prompt": prompt, "smart_home": q.smart_home, "name": name, "voice": q.voice, "oneshot": q.oneshot, "spotify": spotify })
 }
 
 /// So heißt die Befehls-Persönlichkeit: eigener Name oder das zweite Wort.

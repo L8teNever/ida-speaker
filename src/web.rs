@@ -24,7 +24,11 @@ type S = State<Arc<App>>;
 
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
-        .route("/", get(|| async { Html(INDEX) }))
+        // no-cache: nach einem Update sonst alte Seite aus dem Browser-Zwischenspeicher
+        .route(
+            "/",
+            get(|| async { ([(header::CACHE_CONTROL, "no-cache")], Html(INDEX)) }),
+        )
         .route("/health", get(|| async { "ok" }))
         .route("/api/status", get(status))
         .route("/api/setup", post(setup))
