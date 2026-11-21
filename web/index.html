@@ -347,7 +347,7 @@ function spotifyCard() {
     ${p.connected ? `<div class="row"><button class="btn" data-act="/api/spotify/prev">⏮</button><button class="btn" data-act="/api/spotify/toggle">${p.playing ? "Pause" : "Weiter"}</button><button class="btn" data-act="/api/spotify/next">⏭</button></div>` : ""}
     ${toggle("spotify.enabled", "Spotify an")}
     ${field("spotify.api_key", "Soloist-API-Schlüssel", "password", "Einmal erstellen auf developer.spotify.com/dashboard/soloist (Konto mit Premium). Leer lassen = unverändert.")}
-    ${field("spotify.name", "Name in der Spotify-App", "text", "Leer = Name des Lautsprechers.")}
+    ${field("spotify.name", "So heißt er in der Spotify-App", "text", "Frei wählbar, z. B. „Nina Küche“. Leer = Name des Lautsprechers. Nach dem Speichern startet Spotify kurz neu.")}
     ${range("spotify.duck", "Musik beim Sprechen", 0, 100, 5, v => v + " %")}
     ${saveRow()}</div>`;
 }

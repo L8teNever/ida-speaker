@@ -320,6 +320,23 @@ impl Default for Spotify {
     }
 }
 
+impl Spotify {
+    /// Schlüssel versehentlich ins Namensfeld getippt (ein langes Wort aus Buchstaben, Ziffern, _ und -):
+    /// ins Schlüsselfeld verschieben, sonst heißt der Lautsprecher in der Spotify-App wie der Schlüssel.
+    pub fn fix(&mut self) {
+        let n = self.name.trim().to_string();
+        let looks_like_key = n.len() >= 30
+            && n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if looks_like_key || (!n.is_empty() && n == self.api_key) {
+            if self.api_key.is_empty() {
+                self.api_key = n;
+            }
+            self.name.clear();
+        }
+    }
+}
+
 /// WLAN über NetworkManager des Pi. Ohne Netz macht der Lautsprecher ein eigenes Einrichtungs-WLAN auf.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -363,7 +380,11 @@ impl Cloudflare {
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(text) => Ok(toml::from_str(&text)?),
+            Ok(text) => {
+                let mut cfg: Self = toml::from_str(&text)?;
+                cfg.spotify.fix();
+                Ok(cfg)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e.into()),
         }
@@ -490,6 +511,7 @@ impl Config {
             .filter(|c| !c.is_control())
             .take(512)
             .collect();
+        next.spotify.fix();
         Ok(next)
     }
 }
@@ -578,5 +600,23 @@ mod tests {
         assert!((w.min_conf() - 0.95).abs() < 1e-6);
         w.sensitivity = 1.0;
         assert!((w.min_conf() - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn spotify_schluessel_im_namensfeld() {
+        let mut s = Spotify {
+            name: "Spak_cgply2Jy7nQ8fCffCVxWpuAPvHA62VIU".into(),
+            ..Default::default()
+        };
+        s.fix();
+        assert_eq!(s.name, "");
+        assert_eq!(s.api_key, "Spak_cgply2Jy7nQ8fCffCVxWpuAPvHA62VIU");
+        let mut s = Spotify {
+            name: "Nina Küche".into(),
+            api_key: "x".into(),
+            ..Default::default()
+        };
+        s.fix();
+        assert_eq!(s.name, "Nina Küche");
     }
 }

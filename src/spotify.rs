@@ -182,6 +182,8 @@ async fn run(app: Arc<App>) {
     let (tx, mut rx) = mpsc::unbounded_channel();
     *app.music.lock().unwrap() = Some(tx);
     let mut cfg_rx = app.config.subscribe();
+    // Reste von librespot (frühere Spotify-Lösung) aufräumen
+    let _ = std::fs::remove_dir_all(app.data.join("spotify"));
     let mut since = Instant::now(); // seit wann Soloist laufen sollte (für die Fehlermeldung)
     loop {
         let cfg = cfg_rx.borrow_and_update().clone();
