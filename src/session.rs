@@ -240,6 +240,8 @@ pub async fn run(app: Arc<App>, mut commands: mpsc::UnboundedReceiver<Command>) 
                 if app.cfg().audio.tones {
                     audio::beep(&app, Beep::Error);
                 }
+                // Gespeicherte Ansage (geht auch ohne Internet), sonst bleibt es beim Fehlerton
+                crate::phrases::play(&app, crate::phrases::for_error(&format!("{e:#}")));
                 format!("Fehler: {e:#}")
             }
         };

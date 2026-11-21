@@ -7,6 +7,7 @@ mod bluetooth;
 mod cloudflare;
 mod config;
 mod dsp;
+mod phrases;
 mod presence;
 mod session;
 mod spotify;
@@ -42,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(bluetooth::run(app.clone()));
     tokio::spawn(presence::run(app.clone()));
     spotify::spawn(app.clone());
+    phrases::spawn(app.clone());
 
     let port: u16 = std::env::var("PORT")
         .ok()
