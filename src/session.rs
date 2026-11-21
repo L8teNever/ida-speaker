@@ -42,8 +42,13 @@ pub fn ticket_body(cfg: &Config, quick: bool) -> serde_json::Value {
     } else {
         String::new()
     };
+    // laufende Timer/Wecker, damit „Wie lange noch?“ geht
+    let timers: Vec<_> = crate::timers::list()
+        .into_iter()
+        .map(|t| serde_json::json!({ "label": t.label, "due": t.due, "alarm": t.alarm }))
+        .collect();
     if !quick {
-        return serde_json::json!({ "prompt": cfg.assistant.prompt, "smart_home": cfg.assistant.smart_home, "spotify": spotify });
+        return serde_json::json!({ "prompt": cfg.assistant.prompt, "smart_home": cfg.assistant.smart_home, "spotify": spotify, "timers": timers });
     }
     let q = &cfg.quick;
     let prompt = [cfg.assistant.prompt.trim(), q.prompt.trim()]
@@ -52,7 +57,7 @@ pub fn ticket_body(cfg: &Config, quick: bool) -> serde_json::Value {
         .collect::<Vec<_>>()
         .join("\n\n");
     let name = quick_name(cfg);
-    serde_json::json!({ "prompt": prompt, "smart_home": q.smart_home, "name": name, "voice": q.voice, "oneshot": q.oneshot, "spotify": spotify })
+    serde_json::json!({ "prompt": prompt, "smart_home": q.smart_home, "name": name, "voice": q.voice, "oneshot": q.oneshot, "spotify": spotify, "timers": timers })
 }
 
 /// So heißt die Befehls-Persönlichkeit: eigener Name oder das zweite Wort.
@@ -182,6 +187,13 @@ struct ServerMsg {
     value: Option<i64>,
     #[serde(default)]
     uri: String,
+    // "timer": Timer/Wecker stellen oder löschen (action = set/cancel, due = Unix-Zeit, label, alarm)
+    #[serde(default)]
+    due: u64,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    alarm: bool,
     // "timing": Zeiten eines Befehls in ms, gemessen auf dem Server ab dem Ende deines Satzes
     #[serde(default)]
     pause_ms: u64,
@@ -225,14 +237,26 @@ fn timing_line(m: &ServerMsg, wake: Option<(u64, u64)>) -> String {
     parts.join(" · ")
 }
 
+/// Im Gespräch kam ein Musik-Befehl (dann nach „pausieren“ nicht von selbst weiterspielen).
+static MUSIC_TOUCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Nimmt Befehle (Wake-Word, Knopf) entgegen und führt immer höchstens ein Gespräch.
 pub async fn run(app: Arc<App>, mut commands: mpsc::UnboundedReceiver<Command>) {
     while let Some(cmd) = commands.recv().await {
         let Command::Start { source, quick, pre } = cmd else {
             continue;
         };
-        // Musik leiser, solange das Gespräch läuft
+        // Klingelt ein Timer/Wecker, beendet der Name nur das Klingeln
+        if crate::timers::stop(&app) {
+            while commands.try_recv().is_ok() {}
+            continue;
+        }
+        // Musik leiser/stumm, solange das Gespräch läuft; „pausieren“: anhalten und danach weiterspielen
         app.ducking.store(true, Ordering::Relaxed);
+        MUSIC_TOUCHED.store(false, Ordering::Relaxed);
+        let paused = app.cfg().spotify.on_wake == "pause"
+            && app.status.lock().unwrap().spotify.playing
+            && app.music(crate::spotify::Ctrl::Pause);
         let result = match talk(&app, &mut commands, quick, pre).await {
             Ok(r) => r,
             Err(e) => {
@@ -247,6 +271,9 @@ pub async fn run(app: Arc<App>, mut commands: mpsc::UnboundedReceiver<Command>) 
         };
         app.trigger(&source, &result);
         app.talking.store(false, Ordering::Relaxed);
+        if paused && !MUSIC_TOUCHED.load(Ordering::Relaxed) {
+            app.music(crate::spotify::Ctrl::Play);
+        }
         app.ducking.store(false, Ordering::Relaxed);
         *app.mic.lock().unwrap() = None;
         app.set_phase(app.idle_phase());
@@ -359,7 +386,16 @@ async fn talk(
                             "text" => { app.said(&m.who, &m.text); last_activity = Instant::now(); }
                             "tool" => if m.running { app.log(format!("Werkzeug: {}", m.name)); last_activity = Instant::now(); },
                             "interrupted" => app.clear_playback(),
+                            "timer" => match m.action.as_str() {
+                                "set" if m.due > 0 => crate::timers::set(app, &m.label, m.due, m.alarm),
+                                "cancel" => {
+                                    let n = crate::timers::cancel(app, &m.label);
+                                    app.log(format!("Timer: {n} gelöscht"));
+                                }
+                                _ => app.log(format!("Timer: unbekannter Befehl {}", m.action)),
+                            },
                             "music" => {
+                                MUSIC_TOUCHED.store(true, Ordering::Relaxed);
                                 let msg = match crate::spotify::Ctrl::parse(&m.action, m.value, &m.uri).map(|c| app.music(c)) {
                                     Some(true) => format!("Musik: {}", m.action),
                                     Some(false) => "Musik: Spotify läuft auf diesem Lautsprecher nicht".into(),

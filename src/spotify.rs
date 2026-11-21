@@ -187,7 +187,13 @@ async fn run(app: Arc<App>) {
     let mut since = Instant::now(); // seit wann Soloist laufen sollte (für die Fehlermeldung)
     loop {
         let cfg = cfg_rx.borrow_and_update().clone();
-        app.duck_pct.store(cfg.spotify.duck, Ordering::Relaxed);
+        // stumm/pausieren: beim Sprechen ganz leise (bei „pausieren“ bis die Pause greift)
+        let duck = if cfg.spotify.on_wake == "duck" {
+            cfg.spotify.duck
+        } else {
+            0
+        };
+        app.duck_pct.store(duck, Ordering::Relaxed);
         let name = device_name(&cfg);
         let on = cfg.spotify.enabled && !cfg.spotify.api_key.is_empty();
         write_run_env(

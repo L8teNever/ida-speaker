@@ -13,6 +13,7 @@ mod session;
 mod spotify;
 mod state;
 mod system;
+mod timers;
 mod wake;
 mod warp;
 mod web;
@@ -44,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(presence::run(app.clone()));
     spotify::spawn(app.clone());
     phrases::spawn(app.clone());
+    timers::spawn(app.clone());
 
     let port: u16 = std::env::var("PORT")
         .ok()

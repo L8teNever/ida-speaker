@@ -589,6 +589,13 @@ pub fn beep(app: &App, kind: Beep) {
         Beep::Error => &[(330.0, 160), (0.0, 60), (330.0, 160)],
         Beep::Test => &[(523.0, 150), (659.0, 150), (784.0, 250)],
         Beep::Calibrate => &[(1000.0, 250)],
+        Beep::Alarm => &[
+            (880.0, 120),
+            (0.0, 80),
+            (880.0, 120),
+            (0.0, 80),
+            (1175.0, 220),
+        ],
     };
     app.play(&dsp::tone(rate, notes, 0.25));
 }
@@ -601,6 +608,8 @@ pub enum Beep {
     Test,
     /// Kurzer, klarer Messton für die Kalibrierung.
     Calibrate,
+    /// Timer/Wecker klingelt (wird wiederholt).
+    Alarm,
 }
 
 #[cfg(test)]

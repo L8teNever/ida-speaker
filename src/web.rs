@@ -64,6 +64,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/bluetooth/forget", post(bt_forget))
         .route("/api/presence/pair", post(presence_pair))
         .route("/api/spotify/{action}", post(spotify_ctrl))
+        .route("/api/timer/stop", post(timer_stop))
+        .route("/api/timer/{id}/delete", post(timer_delete))
         .with_state(app)
 }
 
@@ -233,6 +235,9 @@ async fn state(State(app): S, headers: HeaderMap) -> Response {
         "bluetooth": s.bluetooth,
         "presence": s.presence,
         "spotify": s.spotify,
+        "timers": crate::timers::list(),
+        "ringing": crate::timers::ringing(),
+        "now": crate::timers::now_s(),
         "triggers": s.triggers,
         "logs": s.logs.iter().rev().take(80).collect::<Vec<_>>(),
         "partner": s.partner,
@@ -774,6 +779,24 @@ async fn presence_pair(State(app): S, headers: HeaderMap, Json(d): Json<BtDevice
     }
     app.log(format!("Anwesenheit: „{name}“ gekoppelt"));
     Json(json!({ "ok": true, "message": format!("„{name}“ ist jetzt dein Handy. Ist es weg, hört der Lautsprecher nicht auf das Wake-Word.") })).into_response()
+}
+
+/// Klingeln beenden (Knopf auf der Website).
+async fn timer_stop(State(app): S, headers: HeaderMap) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let was = crate::timers::stop(&app);
+    Json(json!({ "ok": true, "message": if was { "Klingeln aus." } else { "Es klingelt gerade nichts." } })).into_response()
+}
+
+async fn timer_delete(State(app): S, headers: HeaderMap, Path(id): Path<u64>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let ok = crate::timers::cancel_id(&app, id);
+    Json(json!({ "ok": ok, "message": if ok { "Gelöscht." } else { "Gibt es nicht mehr." } }))
+        .into_response()
 }
 
 /// Knöpfe auf der Website: Pause, Weiter, Lied vor/zurück.

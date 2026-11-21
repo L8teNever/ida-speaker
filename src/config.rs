@@ -307,6 +307,8 @@ pub struct Spotify {
     pub duck: u32,
     /// Soloist-API-Schlüssel (developer.spotify.com/dashboard/soloist). Leer = Spotify aus.
     pub api_key: String,
+    /// Was mit der Musik passiert, wenn du den Namen sagst: "duck" = leiser, "mute" = stumm, "pause" = anhalten und danach weiter.
+    pub on_wake: String,
 }
 
 impl Default for Spotify {
@@ -316,6 +318,7 @@ impl Default for Spotify {
             name: String::new(),
             duck: 15,
             api_key: String::new(),
+            on_wake: "duck".into(),
         }
     }
 }
@@ -512,6 +515,9 @@ impl Config {
             .take(512)
             .collect();
         next.spotify.fix();
+        if !matches!(next.spotify.on_wake.as_str(), "duck" | "mute" | "pause") {
+            next.spotify.on_wake = "duck".into();
+        }
         Ok(next)
     }
 }

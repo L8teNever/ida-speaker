@@ -193,6 +193,7 @@ function statusTab() {
     ${!ida || (c.cloudflare.enabled && !w.connected) ? `<div class="card"><h2>Noch einzurichten</h2><ul>
       ${!ida ? `<li>Unter <b>IDA</b> Adresse, Gerätename und Schlüssel eintragen.</li>` : ""}
       ${c.cloudflare.enabled && !w.connected ? `<li>Cloudflare ist an, aber noch nicht verbunden.</li>` : ""}</ul></div>` : ""}
+    <div class="card"><h2>Timer und Wecker</h2><div id="timers"></div><div class="out"></div></div>
     <div class="card"><h2>Gespräch</h2><div class="talk" id="talk"></div></div>
     <div class="card"><h2>Letzte Auslöser</h2><ul class="trig" id="trig"></ul></div>`;
 }
@@ -212,6 +213,15 @@ function renderLive() {
     ["Lautsprecher", a.output || "–", a.error ? "bad" : "good"],
   ].map(([k, v, d]) => `<div class="stat"><span><i class="dot ${d}"></i>${k}</span><b>${esc(v)}</b></div>`).join("") +
     (a.error ? `<div class="stat" style="grid-column:1/-1"><span>Audio-Fehler</span><b>${esc(a.error)}</b></div>` : "");
+  const tm = $("#timers");
+  if (tm) {
+    const left = d => { const x = Math.max(0, d - S.now); return x < 90 ? x + " s" : x < 7200 ? Math.round(x / 60) + " min" : Math.floor(x / 3600) + " h " + Math.round(x % 3600 / 60) + " min"; };
+    const at = d => new Date(d * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+    tm.innerHTML = (S.ringing ? `<div class="row" style="margin-top:0"><button class="btn danger" data-act="/api/timer/stop">Klingeln aus</button></div>` : "") +
+      ((S.timers || []).length ? `<ul class="trig">${S.timers.map(x => `<li style="display:flex;align-items:center;gap:10px"><span style="flex:1;font-size:14px;color:var(--on-surface)">${x.alarm ? "⏰" : "⏱"} ${esc(x.label)}<br><small class="sub">um ${at(x.due)} · noch ${left(x.due)}</small></span><button class="btn" data-act="/api/timer/${x.id}/delete">Löschen</button></li>`).join("")}</ul>`
+        : `<p class="sub">Keine gestellt. Sag z. B. „Timer auf 10 Minuten“ oder „Weck mich um 7“.</p>`);
+    tm.querySelectorAll("[data-act]").forEach(b => b.onclick = () => action(b, b.dataset.act));
+  }
   const t = $("#talk");
   if (t) t.innerHTML = S.conversation.length ? S.conversation.map(m => m.who === "timing" ? `<p class="time">⏱ ${esc(m.text)}</p>` : `<p class="${m.who === "user" ? "user" : ""}"><b>${m.who === "user" ? "Du" : esc(S.partner || "Stella")}:</b> ${esc(m.text)}</p>`).join("") : `<p class="sub">Noch nichts gesagt.</p>`;
   const tr = $("#trig");
@@ -348,7 +358,8 @@ function spotifyCard() {
     ${toggle("spotify.enabled", "Spotify an")}
     ${field("spotify.api_key", "Soloist-API-Schlüssel", "password", "Einmal erstellen auf developer.spotify.com/dashboard/soloist (Konto mit Premium). Leer lassen = unverändert.")}
     ${field("spotify.name", "So heißt er in der Spotify-App", "text", "Frei wählbar, z. B. „Nina Küche“. Leer = Name des Lautsprechers. Nach dem Speichern startet Spotify kurz neu.")}
-    ${range("spotify.duck", "Musik beim Sprechen", 0, 100, 5, v => v + " %")}
+    <label>Wenn du den Namen sagst</label><select data-k="spotify.on_wake">${[["duck", "Musik leiser"], ["mute", "Musik stumm"], ["pause", "Musik anhalten, danach weiter"]].map(([v, n]) => `<option value="${v}" ${(c.on_wake || "duck") === v ? "selected" : ""}>${n}</option>`).join("")}</select>
+    ${c.on_wake === "duck" || !c.on_wake ? range("spotify.duck", "So leise beim Sprechen", 0, 100, 5, v => v + " %") : ""}
     ${saveRow()}</div>`;
 }
 function btCard() {
