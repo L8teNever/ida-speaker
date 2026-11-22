@@ -225,7 +225,7 @@ pub async fn info(mac: &str) -> Device {
 
 /// Sucht einige Sekunden und gibt alle bekannten Geräte zurück, Audio-Geräte zuerst.
 pub async fn scan(seconds: u64) -> anyhow::Result<Vec<Device>> {
-    let _ = ctl(&["power", "on"], 8).await;
+    ensure_powered().await.map_err(|e| anyhow::anyhow!(e))?;
     let _ = ctl(
         &["--timeout", &seconds.to_string(), "scan", "on"],
         seconds + 5,
@@ -264,6 +264,7 @@ pub async fn pair_connect(mac: &str) -> anyhow::Result<()> {
 
 /// Koppeln und vertrauen; `connect` = danach auch verbinden (Lautsprecher), sonst nur gekoppelt lassen (Handy).
 pub async fn pair(mac: &str, connect: bool) -> anyhow::Result<()> {
+    ensure_powered().await.map_err(|e| anyhow::anyhow!(e))?;
     let known = info(mac).await;
     let mut steps: Vec<(String, &[&str], &[&str], u64)> = vec![
         ("power on".into(), &[][..], &[][..], 300),
@@ -434,12 +435,70 @@ pub fn write_asoundrc(mac: &str, name: &str) {
     }
 }
 
-/// Wächter: hält den gewählten Lautsprecher verbunden und baut das Audio neu auf, sobald er (wieder) da ist.
+/// Stellt sicher, dass der Bluetooth-Adapter des Pi an ist (`Powered: yes`), und versucht es sonst bis zu 3-mal.
+/// Gibt Fehlertext zurück, wenn er sich nicht einschalten lässt (z. B. per rfkill gesperrt).
+pub async fn ensure_powered() -> Result<(), String> {
+    let mut last = String::new();
+    for _ in 0..3 {
+        let show = ctl(&["show"], 8).await.map_err(|e| e.to_string())?;
+        if !show.contains("Controller") {
+            return Err("Kein Bluetooth-Adapter gefunden".into());
+        }
+        if show.lines().any(|l| l.trim() == "Powered: yes") {
+            return Ok(());
+        }
+        last = ctl(&["power", "on"], 8).await.unwrap_or_default();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+    }
+    let l = last.to_lowercase();
+    Err(if l.contains("blocked") {
+        "Bluetooth ist per rfkill gesperrt – am Pi: sudo rfkill unblock bluetooth".into()
+    } else {
+        format!("Bluetooth-Adapter lässt sich nicht einschalten: {last}")
+    })
+}
+
+/// Verbindet den gewählten Lautsprecher (ohne neu zu koppeln): Bluetooth einschalten, vertrauen, verbinden.
+/// Gibt zurück, ob er danach verbunden ist.
+pub async fn reconnect(mac: &str) -> bool {
+    if let Err(e) = ensure_powered().await {
+        tracing::warn!("Bluetooth: {e}");
+        return false;
+    }
+    let known = info(mac).await;
+    if known.connected {
+        return true;
+    }
+    if known.mac.is_empty() || !known.paired {
+        // BlueZ kennt die Box nicht (mehr) gekoppelt: kurz suchen, vielleicht ist sie im Kopplungsmodus
+        let _ = ctl(&["--timeout", "5", "scan", "on"], 10).await;
+    }
+    if !known.trusted {
+        let _ = ctl(&["trust", mac], 8).await;
+    }
+    let out = ctl(&["connect", mac], 20).await.unwrap_or_default();
+    if out.contains("not-powered") || out.contains("NotReady") {
+        // Adapter ging zwischendurch aus: einschalten und gleich noch einmal
+        if ensure_powered().await.is_ok() {
+            let _ = ctl(&["connect", mac], 20).await;
+        }
+    }
+    info(mac).await.connected
+}
+
+/// Wartezeit zwischen zwei Verbindungsversuchen: erst alle 10 s, nach 3 Minuten alle 30 s – gibt nie auf.
+fn retry_wait(tries: u32) -> Duration {
+    Duration::from_secs(if tries <= 18 { 10 } else { 30 })
+}
+
+/// Wächter: hält den gewählten Lautsprecher verbunden (auch nach Strom weg, Reichweite, Neustart der Box)
+/// und baut das Audio neu auf, sobald er (wieder) da ist oder weg ist.
 pub async fn run(app: Arc<App>) {
     let cfg = app.cfg();
     write_asoundrc(&cfg.audio.bluetooth, &cfg.audio.bluetooth_name);
     let mut was_connected = false;
     let mut tries = 0u32;
+    let mut next_try = tokio::time::Instant::now();
     loop {
         // Bluetooth des Pi kann später starten als der Container: bis es da ist, jedes Mal nachsehen
         if !app.status.lock().unwrap().bluetooth.available {
@@ -453,27 +512,38 @@ pub async fn run(app: Arc<App>) {
         let mut connected = false;
         if !mac.is_empty() && app.status.lock().unwrap().bluetooth.available {
             connected = info(&mac).await.connected;
-            if !connected {
-                // Erst oft, dann seltener: Lautsprecher aus = kein Grund, ständig zu funken
-                tries += 1;
-                if tries <= 10 || tries.is_multiple_of(10) {
-                    let _ = ctl(&["connect", &mac], 20).await;
-                    connected = info(&mac).await.connected;
-                }
-            } else {
+            if connected {
                 tries = 0;
+            } else if tokio::time::Instant::now() >= next_try {
+                tries += 1;
+                connected = reconnect(&mac).await;
+                next_try = tokio::time::Instant::now() + retry_wait(tries);
+                if connected {
+                    tries = 0;
+                }
             }
             if connected != was_connected {
                 app.log(if connected {
                     format!("Bluetooth: „{}“ verbunden", cfg.audio.bluetooth_name)
                 } else {
                     format!(
-                        "Bluetooth: „{}“ getrennt – spiele über das Standardgerät",
+                        "Bluetooth: „{}“ getrennt – spiele über das Standardgerät, versuche es weiter",
                         cfg.audio.bluetooth_name
                     )
                 });
+                {
+                    let mut s = app.status.lock().unwrap();
+                    s.bluetooth.connected = connected;
+                }
+                if connected {
+                    // bluez-alsa braucht einen Moment, bis die Box als Audio-Gerät da ist
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
                 app.rebuild_audio.store(true, Ordering::Relaxed);
             }
+        } else {
+            tries = 0;
+            next_try = tokio::time::Instant::now();
         }
         was_connected = connected;
         {
@@ -482,7 +552,7 @@ pub async fn run(app: Arc<App>) {
             s.bluetooth.name = cfg.audio.bluetooth_name.clone();
             s.bluetooth.connected = connected;
         }
-        tokio::time::sleep(Duration::from_secs(15)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 

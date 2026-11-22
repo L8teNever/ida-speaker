@@ -166,9 +166,11 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
         Ok((dev, rate, stream))
     };
     // Bluetooth-Box lässt sich nicht öffnen (bluez-alsa fehlt, Box weg …): über das Standardgerät spielen
+    let mut bt_fallback = bt && !app.status.lock().unwrap().bluetooth.connected;
     let (output, out_rate, out_stream) = match open(output) {
         Ok(x) => x,
         Err(e) if bt => {
+            bt_fallback = true;
             app.log(format!(
                 "Bluetooth-Lautsprecher lässt sich nicht öffnen ({e:#}) – nehme das Standardgerät"
             ));
@@ -240,9 +242,21 @@ fn run(app: &Arc<App>, model: &mut Option<vosk::Model>) -> anyhow::Result<()> {
     let mut peak = 0u32;
     let mut frames = 0u32;
 
+    let mut bt_check = std::time::Instant::now();
     loop {
         if app.rebuild_audio.swap(false, Ordering::Relaxed) {
             return Ok(());
+        }
+        // Box ist verbunden, aber das Audio läuft noch über das Standardgerät (z. B. weil bluez-alsa zu spät kam): nochmal versuchen
+        if bt_fallback
+            && bt_check.elapsed() >= Duration::from_secs(8)
+            && app.status.lock().unwrap().bluetooth.connected
+        {
+            app.log("Bluetooth: Box ist da – wechsle die Ausgabe");
+            return Ok(());
+        }
+        if bt_check.elapsed() >= Duration::from_secs(8) {
+            bt_check = std::time::Instant::now();
         }
         if cfg_rx.has_changed().unwrap_or(false) {
             let next = cfg_rx.borrow_and_update().clone();

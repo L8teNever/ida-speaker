@@ -48,6 +48,17 @@ if command -v apt-get >/dev/null 2>&1; then
     $SUDO systemctl enable --now bluetooth >/dev/null 2>&1 || true
     $SUDO systemctl enable --now bluealsa >/dev/null 2>&1 || true
     command -v rfkill >/dev/null 2>&1 && $SUDO rfkill unblock bluetooth 2>/dev/null || true
+    # Adapter nach jedem Start automatisch einschalten (sonst: „adapter-not-powered“)
+    if [ -f /etc/bluetooth/main.conf ]; then
+      if grep -qE '^#?AutoEnable' /etc/bluetooth/main.conf; then
+        $SUDO sed -i -E 's/^#?AutoEnable.*/AutoEnable=true/' /etc/bluetooth/main.conf
+      elif grep -q '^\[Policy\]' /etc/bluetooth/main.conf; then
+        $SUDO sed -i 's/^\[Policy\]/[Policy]\nAutoEnable=true/' /etc/bluetooth/main.conf
+      else
+        printf '\n[Policy]\nAutoEnable=true\n' | $SUDO tee -a /etc/bluetooth/main.conf >/dev/null
+      fi
+      $SUDO systemctl restart bluetooth >/dev/null 2>&1 || true
+    fi
   fi
 fi
 # Spotify: avahi für die Suche im WLAN (schadet nicht, falls Soloist es nicht braucht)
