@@ -104,4 +104,4 @@ fi
 echo "Fertig. ida-speaker startet ab jetzt bei jedem Booten von selbst."
 echo "Update später: ida-speaker-update"
 echo "Einstellungen: http://${ip:-<pi>}:8080  oder  http://$(hostname).local:8080"
-echo "Ohne Netz öffnet der Pi nach ~90 s das WLAN „IDA-Speaker-Setup“ (Passwort: idaspeaker) → http://10.42.0.1:8080"
+echo "Ohne Netz öffnet der Pi nach 5 Minuten das WLAN „IDA-Speaker-Setup“ (Passwort: idaspeaker) → http://10.42.0.1:8080"

@@ -584,7 +584,15 @@ async fn wifi_connect(State(app): S, headers: HeaderMap, Json(w): Json<WifiConne
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             match crate::wifi::connect(&w.ssid, &w.password).await {
-                Ok(_) => app2.log(format!("Mit „{}“ verbunden", w.ssid)),
+                Ok(_) => {
+                    app2.log(format!("Mit „{}“ verbunden", w.ssid));
+                    // Der Wartungsmodus würde das Einrichtungs-WLAN sofort wieder öffnen
+                    let mut cfg = app2.cfg();
+                    if cfg.wifi.maintenance {
+                        cfg.wifi.maintenance = false;
+                        let _ = app2.save_config(cfg);
+                    }
+                }
                 Err(e) => app2.log(format!("WLAN „{}“: {e:#}", w.ssid)),
             }
         });

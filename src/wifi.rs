@@ -367,15 +367,11 @@ pub async fn run(app: Arc<App>) {
     }
     let mut offline_since: Option<Instant> = None;
     let mut hotspot_since: Option<Instant> = None;
-    let grace = Duration::from_secs(
-        std::env::var("HOTSPOT_AFTER_S")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(90),
-    );
+    let mut was_maintenance = false;
     loop {
         tokio::time::sleep(Duration::from_secs(15)).await;
         let cfg = app.cfg().wifi;
+        let grace = Duration::from_secs(cfg.hotspot_after_s.clamp(30, 3600));
         let st = status().await;
         {
             let mut s = app.status.lock().unwrap();
@@ -385,6 +381,32 @@ pub async fn run(app: Arc<App>) {
             continue;
         }
         let online = st.ethernet || !st.ssid.is_empty();
+        // Wartungsmodus: Hotspot immer an (auch nach Neustart), nie von selbst zu
+        if cfg.maintenance {
+            was_maintenance = true;
+            if !st.hotspot {
+                app.log(format!(
+                    "Wartungsmodus – öffne Einrichtungs-WLAN „{}“ (Website: http://10.42.0.1:8080)",
+                    cfg.hotspot_ssid
+                ));
+                if let Err(e) = hotspot_up(&cfg.hotspot_ssid, &cfg.hotspot_password).await {
+                    app.log(format!("Einrichtungs-WLAN geht nicht: {e}"));
+                }
+            }
+            offline_since = None;
+            hotspot_since = None;
+            continue;
+        }
+        if was_maintenance {
+            // Wartungsmodus gerade beendet: Hotspot zu, der Pi verbindet sich wieder mit bekannten WLANs
+            was_maintenance = false;
+            if st.hotspot {
+                app.log("Wartungsmodus aus – Einrichtungs-WLAN geht zu");
+                hotspot_down().await;
+                hotspot_since = None;
+                continue;
+            }
+        }
         if st.hotspot {
             let since = *hotspot_since.get_or_insert_with(Instant::now);
             if !cfg.hotspot || online {

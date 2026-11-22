@@ -43,7 +43,9 @@ Dann `http://<pi>:8080` oder `http://<hostname>.local:8080` öffnen. Beim ersten
 5. **Audio:** Mikrofon und Lautsprecher wählen, Testton abspielen, Pegel prüfen.
 6. **Wake-Word:** Wort eintragen und Empfindlichkeit einstellen.
 
-**Kein Netz?** Findet der Pi weder Kabel noch ein bekanntes WLAN, öffnet er nach etwa 90 Sekunden das WLAN **„IDA-Speaker-Setup“** (Passwort `idaspeaker`, beides änderbar). Mit dem Handy verbinden, `http://10.42.0.1:8080` öffnen und dort das richtige WLAN wählen.
+**Kein Netz?** Findet der Pi weder Kabel noch ein bekanntes WLAN, öffnet er nach 5 Minuten (einstellbar) das WLAN **„IDA-Speaker-Setup“** (Passwort `idaspeaker`, beides änderbar). Mit dem Handy verbinden, `http://10.42.0.1:8080` öffnen und dort das richtige WLAN wählen.
+
+**Wartungsmodus:** Auf der Seite „WLAN“ einschalten, dann geht das Einrichtungs-WLAN sofort auf und bleibt an – auch nach Stromausfall und Neustart (gespeichert in der config.toml). Das normale WLAN des Pi ist dann aus, ein Kabel geht weiter. Ausschalten bringt ihn zurück ins bekannte WLAN. Verbindest du über das Einrichtungs-WLAN ein Netz, geht der Wartungsmodus von selbst aus.
 
 Alle Änderungen gelten sofort, ein Neustart ist nicht nötig. Die Einstellungen liegen nur auf dem Pi (`/data/config.toml` im Volume), nie im Repo.
 

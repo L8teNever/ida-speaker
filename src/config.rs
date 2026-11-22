@@ -348,6 +348,10 @@ pub struct Wifi {
     pub hotspot_ssid: String,
     /// Mindestens 8 Zeichen (WPA2).
     pub hotspot_password: String,
+    /// Sekunden ohne Netz, bis das Einrichtungs-WLAN aufgeht.
+    pub hotspot_after_s: u64,
+    /// Wartungsmodus: Das Einrichtungs-WLAN bleibt dauerhaft an, auch nach Stromausfall und Neustart (steht in der config.toml).
+    pub maintenance: bool,
 }
 
 impl Default for Wifi {
@@ -356,6 +360,8 @@ impl Default for Wifi {
             hotspot: true,
             hotspot_ssid: "IDA-Speaker-Setup".into(),
             hotspot_password: "idaspeaker".into(),
+            hotspot_after_s: 300,
+            maintenance: false,
         }
     }
 }
@@ -445,6 +451,7 @@ impl Config {
         {
             next.wifi.hotspot_password = self.wifi.hotspot_password.clone();
         }
+        next.wifi.hotspot_after_s = next.wifi.hotspot_after_s.clamp(30, 3600);
         next.wifi.hotspot_ssid = next.wifi.hotspot_ssid.trim().chars().take(32).collect();
         if next.wifi.hotspot_ssid.is_empty() {
             next.wifi.hotspot_ssid = Wifi::default().hotspot_ssid;

@@ -398,8 +398,11 @@ function wifiTab() {
       <div id="wifipw"></div>
       <div class="row"><button class="btn" id="rescan">Neu suchen</button></div><div class="out"></div></div>
     <div class="card"><h2>Einrichtungs-WLAN</h2>
-      <p class="hint">Findet der Pi kein Netz, öffnet er nach etwa 90 Sekunden dieses WLAN. Damit verbinden und <code>http://10.42.0.1:8080</code> öffnen.</p>
+      <p class="hint">Findet der Pi kein Netz, öffnet er nach der eingestellten Zeit dieses WLAN. Damit verbinden und <code>http://10.42.0.1:8080</code> öffnen.</p>
       ${toggle("wifi.hotspot", "Einrichtungs-WLAN, wenn kein Netz da ist")}
+      ${field("wifi.hotspot_after_s", "Sekunden ohne Netz, bis es aufgeht (300 = 5 Minuten)", "number")}
+      <p class="hint"><b>Wartungsmodus:</b> Das Einrichtungs-WLAN geht sofort auf und bleibt an, auch nach Stromausfall und Neustart. Das normale WLAN des Pi ist dann aus (Kabel geht weiter). Ausschalten, um wieder ins normale WLAN zu gehen. Verbindest du über das Einrichtungs-WLAN ein Netz, geht der Wartungsmodus von selbst aus.</p>
+      ${toggle("wifi.maintenance", "Wartungsmodus (Einrichtungs-WLAN dauerhaft an)")}
       ${field("wifi.hotspot_ssid", "Name")}
       ${field("wifi.hotspot_password", "Passwort (mind. 8 Zeichen)", "password")}
       ${saveRow()}</div>`;
