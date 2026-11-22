@@ -56,6 +56,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/wifi", get(wifi_list))
         .route("/api/wifi/connect", post(wifi_connect))
         .route("/api/wifi/forget", post(wifi_forget))
+        .route("/api/wifi/add", post(wifi_add))
         .route("/api/cloudflare/auto", post(cloudflare_auto))
         .route("/api/bluetooth", get(bt_status))
         .route("/api/bluetooth/scan", post(bt_scan))
@@ -611,6 +612,23 @@ async fn wifi_connect(State(app): S, headers: HeaderMap, Json(w): Json<WifiConne
             app.log(format!("WLAN „{}“: {msg}", w.ssid));
             Json(json!({ "ok": false, "message": msg, "need_password": need })).into_response()
         }
+    }
+}
+
+async fn wifi_add(State(app): S, headers: HeaderMap, Json(w): Json<WifiConnect>) -> Response {
+    if let Err(r) = guard(&app, &headers) {
+        return r;
+    }
+    let ssid = w.ssid.trim();
+    if ssid.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "WLAN-Name fehlt");
+    }
+    match crate::wifi::add_only(ssid, &w.password).await {
+        Ok(()) => {
+            app.log(format!("WLAN „{ssid}“ vorab gespeichert"));
+            Json(json!({ "ok": true, "message": format!("„{ssid}“ gespeichert – der Pi verbindet sich damit, sobald es in Reichweite ist") })).into_response()
+        }
+        Err(e) => Json(json!({ "ok": false, "message": format!("{e:#}") })).into_response(),
     }
 }
 

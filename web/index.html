@@ -393,10 +393,15 @@ function wifiTab() {
       <div class="stat"><span>Adresse</span><b>${esc(st.ip || "–")}</b></div>
       <div class="stat"><span>Name im Netz</span><b>${esc(st.hostname ? st.hostname + ".local" : "–")}</b></div></div></div>
     <div class="card"><h2>WLAN wählen</h2>${w.error ? `<div class="msg bad">${esc(w.error)}</div>` : ""}
-      <ul class="trig">${w.networks.map((n, i) => `<li style="display:flex;align-items:center;gap:10px"><span style="flex:1;font-size:14px;color:var(--on-surface)">${n.in_use ? "<b>" : ""}${esc(n.ssid)}${n.in_use ? "</b> · verbunden" : ""}${n.saved && !n.in_use ? " · gespeichert" : ""}<br><small class="sub">${n.signal} % · ${esc(n.security || "offen")}</small></span>
-        ${n.in_use ? "" : `<button class="btn" data-wifi="${i}">Verbinden</button>`}${n.saved ? `<button class="btn" data-forget="${i}">Vergessen</button>` : ""}</li>`).join("") || `<li class="sub">Keine Netze gefunden.</li>`}</ul>
+      <ul class="trig">${w.networks.map((n, i) => `<li style="display:flex;align-items:center;gap:10px"><span style="flex:1;font-size:14px;color:var(--on-surface)">${n.in_use ? "<b>" : ""}${esc(n.ssid)}${n.in_use ? "</b> · verbunden" : ""}${n.saved && !n.in_use ? " · gespeichert" : ""}<br><small class="sub">${n.in_range === false ? "nicht in Reichweite" : n.signal + " % · " + esc(n.security || "offen")}</small></span>
+        ${n.in_use || n.in_range === false ? "" : `<button class="btn" data-wifi="${i}">Verbinden</button>`}${n.saved ? `<button class="btn" data-forget="${i}">Vergessen</button>` : ""}</li>`).join("") || `<li class="sub">Keine Netze gefunden.</li>`}</ul>
       <div id="wifipw"></div>
       <div class="row"><button class="btn" id="rescan">Neu suchen</button></div><div class="out"></div></div>
+    <div class="card"><h2>WLAN vorab speichern</h2><p class="hint">Für ein WLAN, das jetzt nicht in Reichweite ist: Der Pi merkt es sich und verbindet sich später von selbst.</p>
+      <label>Name (SSID)</label><input type="text" id="padd-ssid" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <label>Passwort (leer = offenes Netz)</label><input type="password" id="padd-pw" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div class="row"><button class="btn primary" id="padd">Speichern</button></div><div class="out"></div></div>
+    <div class="card"><h2>Mehrere WLANs</h2><p class="hint">Der Pi merkt sich beliebig viele WLANs und verbindet sich mit dem, das gerade in Reichweite ist. Hat das aktuelle kein Internet, probiert er nach der Wartezeit unten die anderen gespeicherten durch. Ein neues WLAN einfach oben verbinden – die alten bleiben gespeichert.</p></div>
     <div class="card"><h2>Einrichtungs-WLAN</h2>
       <p class="hint">Findet der Pi kein Netz, öffnet er nach der eingestellten Zeit dieses WLAN. Damit verbinden und <code>http://10.42.0.1:8080</code> öffnen.</p>
       ${toggle("wifi.hotspot", "Einrichtungs-WLAN, wenn kein Netz da ist")}
@@ -579,6 +584,7 @@ async function render() {
     ask();
   });
   document.querySelectorAll("[data-forget]").forEach(b => b.onclick = () => action(b, "/api/wifi/forget", { ssid: wifiData.networks[b.dataset.forget].ssid }).then(loadWifi));
+  const pa = $("#padd"); if (pa) { addEyes(pa.closest(".card")); pa.onclick = () => action(pa, "/api/wifi/add", { ssid: $("#padd-ssid").value, password: $("#padd-pw").value }); }
   const rs = $("#rescan"); if (rs) rs.onclick = () => { wifiData = null; render(); loadWifi(); };
   const ca = $("#cfauto"); if (ca) ca.onclick = () => cfAuto(ca, {});
   const wc = $("#wzcf"); if (wc) wc.onclick = () => { cfPick.mode = wc.dataset.mode; cfAuto(wc, {}); };

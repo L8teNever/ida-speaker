@@ -76,6 +76,8 @@ pub struct Network {
     pub security: String,
     pub in_use: bool,
     pub saved: bool,
+    /// Gerade in Reichweite (gespeicherte Netze, die weg sind, stehen trotzdem in der Liste).
+    pub in_range: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -103,6 +105,7 @@ pub fn parse_networks(list: &str, saved: &[String]) -> Vec<Network> {
             signal: f[2].trim().parse().unwrap_or(0),
             security: f[3].trim().to_string(),
             saved: saved.contains(&f[1]),
+            in_range: true,
         };
         match nets.iter_mut().find(|x| x.ssid == n.ssid) {
             Some(x) => {
@@ -200,7 +203,65 @@ pub async fn scan() -> anyhow::Result<Vec<Network>> {
         "auto",
     ])
     .await?;
-    Ok(parse_networks(&list, &saved))
+    let mut nets = parse_networks(&list, &saved);
+    // Gespeicherte WLANs, die gerade nicht in Reichweite sind, trotzdem zeigen (zum Vergessen)
+    for ssid in saved {
+        if !nets.iter().any(|n| n.ssid == ssid) {
+            nets.push(Network {
+                ssid,
+                signal: 0,
+                security: String::new(),
+                in_use: false,
+                saved: true,
+                in_range: false,
+            });
+        }
+    }
+    Ok(nets)
+}
+
+/// Kommt der Pi wirklich ins Internet? (TCP-Verbindung zu bekannten Diensten, ohne DNS.)
+pub async fn has_internet() -> bool {
+    for addr in ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443"] {
+        let t = tokio::time::timeout(
+            Duration::from_secs(4),
+            tokio::net::TcpStream::connect(addr),
+        )
+        .await;
+        if matches!(t, Ok(Ok(_))) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Verbunden, aber ohne Internet: andere gespeicherte WLANs in Reichweite der Reihe nach probieren.
+/// Klappt keins, geht es zurück zum bisherigen. Gibt den Namen des WLANs zurück, mit dem es klappt.
+async fn try_other_saved(current_ssid: &str) -> Option<String> {
+    let in_range: Vec<String> = nmcli(&["-t", "-f", "SSID", "device", "wifi", "list", "--rescan", "yes"])
+        .await
+        .ok()?
+        .lines()
+        .map(|l| split_terse(l).into_iter().next().unwrap_or_default())
+        .collect();
+    for (name, ssid) in saved_wifi().await {
+        if ssid == current_ssid || !in_range.contains(&ssid) {
+            continue;
+        }
+        if nmcli(&["connection", "up", &name]).await.is_ok() {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            if has_internet().await {
+                return Some(ssid);
+            }
+        }
+    }
+    // Nichts ging: zurück zum alten Netz
+    for (name, ssid) in saved_wifi().await {
+        if ssid == current_ssid {
+            let _ = nmcli(&["connection", "up", &name]).await;
+        }
+    }
+    None
 }
 
 /// Fehlertext, wenn für ein gesichertes WLAN kein (gültiges) Passwort da ist. Die Website fragt dann danach.
@@ -276,6 +337,26 @@ pub async fn connect(ssid: &str, password: &str) -> anyhow::Result<String> {
             Err(e)
         }
     }
+}
+
+/// Speichert ein WLAN vorab, ohne zu verbinden (auch wenn es gerade nicht in Reichweite ist).
+/// Der Pi verbindet sich später von selbst, sobald es da ist.
+pub async fn add_only(ssid: &str, password: &str) -> anyhow::Result<()> {
+    if !password.is_empty() && !(8..=64).contains(&password.len()) {
+        anyhow::bail!("Ein WLAN-Passwort hat 8 bis 63 Zeichen.");
+    }
+    remove_profiles(ssid).await;
+    let mut args = vec![
+        "connection", "add", "type", "wifi", "con-name", ssid, "ssid", ssid,
+        "connection.autoconnect", "yes",
+    ];
+    if !password.is_empty() {
+        args.extend([
+            "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password, "wifi-sec.psk-flags", "0",
+        ]);
+    }
+    nmcli(&args).await?;
+    Ok(())
 }
 
 /// Legt ein WPA-Profil mit fest gespeichertem Passwort an und verbindet.
@@ -368,6 +449,7 @@ pub async fn run(app: Arc<App>) {
     let mut offline_since: Option<Instant> = None;
     let mut hotspot_since: Option<Instant> = None;
     let mut was_maintenance = false;
+    let mut noinet_since: Option<Instant> = None;
     loop {
         tokio::time::sleep(Duration::from_secs(15)).await;
         let cfg = app.cfg().wifi;
@@ -426,8 +508,23 @@ pub async fn run(app: Arc<App>) {
         hotspot_since = None;
         if online {
             offline_since = None;
+            // Per WLAN verbunden, aber kein Internet: nach der Wartezeit andere gespeicherte WLANs probieren
+            if st.ethernet || st.ssid.is_empty() || has_internet().await {
+                noinet_since = None;
+            } else {
+                let t = *noinet_since.get_or_insert_with(Instant::now);
+                if t.elapsed() > grace && !app.web_active() {
+                    app.log(format!("„{}“ hat kein Internet – probiere andere gespeicherte WLANs", st.ssid));
+                    match try_other_saved(&st.ssid).await {
+                        Some(n) => app.log(format!("Jetzt mit „{n}“ verbunden")),
+                        None => app.log("Kein gespeichertes WLAN mit Internet gefunden"),
+                    }
+                    noinet_since = Some(Instant::now());
+                }
+            }
             continue;
         }
+        noinet_since = None;
         let since = *offline_since.get_or_insert_with(Instant::now);
         if cfg.hotspot && since.elapsed() > grace {
             app.log(format!(
@@ -465,6 +562,7 @@ mod tests {
             vec!["Zuhause", "Offen", "Nachbar"]
         );
         assert!(n[0].in_use);
+        assert!(n.iter().all(|x| x.in_range));
         assert_eq!(n[0].signal, 80);
         assert!(n[2].saved);
         assert_eq!(n[1].security, "");
