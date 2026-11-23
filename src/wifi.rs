@@ -223,11 +223,8 @@ pub async fn scan() -> anyhow::Result<Vec<Network>> {
 /// Kommt der Pi wirklich ins Internet? (TCP-Verbindung zu bekannten Diensten, ohne DNS.)
 pub async fn has_internet() -> bool {
     for addr in ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443"] {
-        let t = tokio::time::timeout(
-            Duration::from_secs(4),
-            tokio::net::TcpStream::connect(addr),
-        )
-        .await;
+        let t = tokio::time::timeout(Duration::from_secs(4), tokio::net::TcpStream::connect(addr))
+            .await;
         if matches!(t, Ok(Ok(_))) {
             return true;
         }
@@ -238,12 +235,14 @@ pub async fn has_internet() -> bool {
 /// Verbunden, aber ohne Internet: andere gespeicherte WLANs in Reichweite der Reihe nach probieren.
 /// Klappt keins, geht es zurück zum bisherigen. Gibt den Namen des WLANs zurück, mit dem es klappt.
 async fn try_other_saved(current_ssid: &str) -> Option<String> {
-    let in_range: Vec<String> = nmcli(&["-t", "-f", "SSID", "device", "wifi", "list", "--rescan", "yes"])
-        .await
-        .ok()?
-        .lines()
-        .map(|l| split_terse(l).into_iter().next().unwrap_or_default())
-        .collect();
+    let in_range: Vec<String> = nmcli(&[
+        "-t", "-f", "SSID", "device", "wifi", "list", "--rescan", "yes",
+    ])
+    .await
+    .ok()?
+    .lines()
+    .map(|l| split_terse(l).into_iter().next().unwrap_or_default())
+    .collect();
     for (name, ssid) in saved_wifi().await {
         if ssid == current_ssid || !in_range.contains(&ssid) {
             continue;
@@ -347,12 +346,25 @@ pub async fn add_only(ssid: &str, password: &str) -> anyhow::Result<()> {
     }
     remove_profiles(ssid).await;
     let mut args = vec![
-        "connection", "add", "type", "wifi", "con-name", ssid, "ssid", ssid,
-        "connection.autoconnect", "yes",
+        "connection",
+        "add",
+        "type",
+        "wifi",
+        "con-name",
+        ssid,
+        "ssid",
+        ssid,
+        "connection.autoconnect",
+        "yes",
     ];
     if !password.is_empty() {
         args.extend([
-            "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password, "wifi-sec.psk-flags", "0",
+            "wifi-sec.key-mgmt",
+            "wpa-psk",
+            "wifi-sec.psk",
+            password,
+            "wifi-sec.psk-flags",
+            "0",
         ]);
     }
     nmcli(&args).await?;
@@ -514,7 +526,10 @@ pub async fn run(app: Arc<App>) {
             } else {
                 let t = *noinet_since.get_or_insert_with(Instant::now);
                 if t.elapsed() > grace && !app.web_active() {
-                    app.log(format!("„{}“ hat kein Internet – probiere andere gespeicherte WLANs", st.ssid));
+                    app.log(format!(
+                        "„{}“ hat kein Internet – probiere andere gespeicherte WLANs",
+                        st.ssid
+                    ));
                     match try_other_saved(&st.ssid).await {
                         Some(n) => app.log(format!("Jetzt mit „{n}“ verbunden")),
                         None => app.log("Kein gespeichertes WLAN mit Internet gefunden"),
