@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     audio::spawn(app.clone());
     tokio::spawn(session::run(app.clone(), cmd_rx));
+    tokio::spawn(session::prefetch(app.clone()));
     tokio::spawn(warp::run(app.clone()));
     tokio::spawn(wifi::run(app.clone()));
     tokio::spawn(bluetooth::run(app.clone()));

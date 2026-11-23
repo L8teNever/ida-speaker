@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Ticket {
     pub ticket: String,
     #[serde(default)]
@@ -21,12 +21,69 @@ pub struct Ticket {
     pub busy: bool,
 }
 
+/// Ein Client für alles: die Verbindung (TLS) zu IDA bleibt offen, das nächste Ticket spart den Handshake.
 pub fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("http client")
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(300))
+                .tcp_keepalive(Duration::from_secs(30))
+                .build()
+                .expect("http client")
+        })
+        .clone()
+}
+
+/// So lange gilt ein vorab geholtes Ticket als frisch (IDA lässt es 60 s gelten).
+const PREFETCH_MAX: Duration = Duration::from_secs(45);
+/// So oft holt der Lautsprecher im Leerlauf ein neues Ticket (hält auch die Verbindung warm).
+const PREFETCH_EVERY: Duration = Duration::from_secs(40);
+
+/// Vorab geholte Tickets: [normal, zweiter Name] mit Zeitpunkt und dem, was mitging.
+type Prefetched = Option<(Instant, String, Ticket)>;
+static PREFETCH: std::sync::Mutex<[Prefetched; 2]> = std::sync::Mutex::new([None, None]);
+
+/// Woran ein vorab geholtes Ticket hängt: Adresse, Gerät und alles, was beim Ticket mitgeht (Prompt, Timer …).
+fn prefetch_key(cfg: &Config, quick: bool) -> String {
+    format!(
+        "{}|{}|{}",
+        cfg.ida.url,
+        cfg.ida.device_name,
+        ticket_body(cfg, quick)
+    )
+}
+
+/// Nach dem Namen: das vorab geholte Ticket, wenn es noch passt – sonst ein neues (kostet eine Runde zu IDA).
+async fn fresh_ticket(cfg: &Config, quick: bool) -> anyhow::Result<Ticket> {
+    let ready = PREFETCH.lock().unwrap()[quick as usize].take();
+    if let Some((at, key, t)) = ready
+        && at.elapsed() < PREFETCH_MAX
+        && !t.busy
+        && key == prefetch_key(cfg, quick)
+    {
+        return Ok(t);
+    }
+    ticket_for(cfg, quick).await
+}
+
+/// Hält im Leerlauf je ein frisches Ticket bereit, damit nach dem Namen sofort die Verbindung aufgeht.
+pub async fn prefetch(app: Arc<App>) {
+    loop {
+        for quick in [false, true] {
+            let cfg = app.cfg();
+            if app.talking.load(Ordering::Relaxed) || (quick && cfg.wake.second_word.is_empty()) {
+                continue;
+            }
+            let key = prefetch_key(&cfg, quick);
+            if let Ok(t) = ticket_for(&cfg, quick).await {
+                PREFETCH.lock().unwrap()[quick as usize] = Some((Instant::now(), key, t));
+            }
+        }
+        tokio::time::sleep(PREFETCH_EVERY).await;
+    }
 }
 
 /// Holt ein Ticket (gilt eine Minute). Auch der Test-Knopf auf der Website nutzt das.
@@ -294,13 +351,12 @@ async fn talk(
     if cfg.audio.tones {
         audio::beep(app, Beep::Listen);
     }
-    // Mikrofon schon beim Verbinden mitschneiden (bis 8 s): beim Befehl („Computer, Licht an“) zählt jedes Wort
+    // Mikrofon schon beim Verbinden mitschneiden (bis 8 s): jedes Wort nach dem Namen zählt („Ida, Licht an“),
+    // ob das Satzende erreicht ist, entscheidet IDA Voice – der Lautsprecher schickt nur weiter
     let (mic_tx, mut mic_rx) = mpsc::channel::<Vec<i16>>(800);
-    if quick {
-        *app.mic.lock().unwrap() = Some(mic_tx.clone());
-        app.talking.store(true, Ordering::Relaxed);
-    }
-    let t = ticket_for(&cfg, quick).await?;
+    *app.mic.lock().unwrap() = Some(mic_tx.clone());
+    app.talking.store(true, Ordering::Relaxed);
+    let t = fresh_ticket(&cfg, quick).await?;
     if t.busy {
         anyhow::bail!(
             "{} ist gerade in zwei Gesprächen",
@@ -338,7 +394,7 @@ async fn talk(
         silence = silence.min(Duration::from_secs(6));
     }
     // Bis IDA „ready“ meldet, sammeln: zuerst das, was nach dem Namen schon gesagt wurde
-    let mut ready = !quick;
+    let mut ready = false;
     let mut connected_ms = woke.elapsed().as_millis() as u64;
     let mut first_audio: Option<u64> = None; // Name -> erste Antwort hörbar
     let mut first_timing = true;
@@ -501,6 +557,16 @@ mod tests {
         cfg.quick.name = "Jarvis".into();
         assert_eq!(ticket_body(&cfg, true)["name"], "Jarvis");
     }
+    #[test]
+    fn prefetched_ticket_follows_settings() {
+        let mut cfg = Config::default();
+        let a = prefetch_key(&cfg, false);
+        assert_eq!(a, prefetch_key(&cfg, false));
+        assert_ne!(a, prefetch_key(&cfg, true));
+        cfg.assistant.prompt = "Küche".into();
+        assert_ne!(a, prefetch_key(&cfg, false));
+    }
+
     #[test]
     fn timing_shows_every_step() {
         assert_eq!(secs(0), "0,0 s");

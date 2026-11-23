@@ -50,3 +50,11 @@ Beides schickt der Lautsprecher bei jedem Ticket mit, IDA speichert es nicht.
    - Pi → IDA: binär PCM 16 bit LE, 16 kHz mono; Text `{"type":"end"}` zum Auflegen
    - IDA → Pi: binär PCM 16 bit LE, 24 kHz mono; Text `ready`, `text`, `tool`, `interrupted`, `end`, `error`
 3. Mit `mode=speaker` antwortet Stella kurz und gesprochen und verweist nie auf einen Bildschirm. Statt einer langen Begrüßung meldet sie sich nur mit „Ja?“.
+
+## Schnell verbinden
+
+- Im Leerlauf holt der Lautsprecher alle 40 s ein frisches Ticket (für den normalen und den zweiten Namen). Nach dem Namen geht so sofort
+  der WebSocket auf, ohne erst ein Ticket zu holen. Ändert sich, was beim Ticket mitgeht (Prompt, Timer …), holt er ein neues.
+- Die HTTPS-Verbindung zu IDA bleibt offen (ein gemeinsamer Client), das spart den TLS-Handshake.
+- Auch im normalen Modus wird das Mikrofon ab dem Namen mitgeschnitten und nach `ready` nachgeschickt: „Ida, mach das Licht an“ geht in
+  einem Zug. Wann der Satz fertig ist, entscheidet IDA Voice, der Lautsprecher schickt nur weiter.
